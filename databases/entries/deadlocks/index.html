@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Deadlocks — Detection, Prevention &amp; the Coffman Conditions — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Deadlocks — Detection, Prevention &amp; the Coffman Conditions</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A <strong>deadlock</strong> is a cycle of waiting: a set of transactions where each holds a lock another needs and waits for a lock another holds, so none can ever proceed. It is the dark side of pessimistic locking — once transactions can <em>block</em> each other, they can block each other <em>in a circle</em>. The whole topic collapses into one master key: a deadlock needs all four <strong>Coffman conditions</strong> at once, so breaking any single one makes deadlock impossible.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">deadlock</span>
+        <span class="badge tag">coffman-conditions</span>
+        <span class="badge tag">circular-wait</span>
+        <span class="badge tag">wait-for-graph</span>
+        <span class="badge tag">deadlock-detection</span>
+        <span class="badge tag">deadlock-timeout</span>
+        <span class="badge tag">40P01</span>
+        <span class="badge tag">lock-ordering</span>
+        <span class="badge tag">livelock</span>
+        <span class="meta-dates">Created 2026-06-15 · Updated 2026-06-15</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Deadlock</dt>
+        <dd>A situation in which no member of a group of transactions can proceed because each is waiting for a lock another member holds — a frozen cycle of waiting. It can arise even without explicit locking: two plain <code>UPDATE</code>s touching the same rows in opposite order are enough.</dd>
+
+        <dt>The four Coffman conditions</dt>
+        <dd>The four properties that must hold <em>simultaneously</em> for a deadlock (Coffman, 1971): <strong>mutual exclusion</strong> (a resource serves one holder at a time), <strong>hold and wait</strong> (a transaction holds one lock while requesting another), <strong>no preemption</strong> (a lock is released only voluntarily), and <strong>circular wait</strong> (a cycle of transactions each waiting on the next). Break any one and deadlock is impossible.</dd>
+
+        <dt>Wait-for graph</dt>
+        <dd>The detection structure: nodes are <em>transactions</em>, and an edge T1→T2 means "T1 waits for a lock T2 holds." A <strong>cycle in this graph is exactly a deadlock</strong>. (The resource-allocation graph is the fuller version with resource nodes too; databases use the transaction-only wait-for projection.)</dd>
+
+        <dt>deadlock_timeout</dt>
+        <dd>The interval (Postgres default 1s) a blocked transaction waits before the engine runs deadlock detection. Cycle-checking is expensive and most waits are ordinary contention that clears on its own, so the engine optimizes for the common case and only builds the graph if the wait persists.</dd>
+
+        <dt>Victim abort (SQLSTATE 40P01)</dt>
+        <dd>The recovery action: on detecting a cycle, the engine picks one transaction, rolls it back to break the loop, and lets the others proceed. In Postgres this surfaces as <code>ERROR: deadlock detected</code> with SQLSTATE <code>40P01</code>. The application must catch it and retry.</dd>
+
+        <dt>Livelock</dt>
+        <dd>The cousin of deadlock: transactions are not frozen but keep retrying-and-colliding forever, changing state yet making no progress. A naive no-delay retry loop turns a resolved deadlock into a livelock; the fix is randomized exponential backoff.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The canonical database deadlock needs no explicit <code>LOCK</code> statement — just two transactions touching the same two rows in <strong>opposite order</strong>. Row-level locks taken by ordinary <code>UPDATE</code>s are enough:</p>
+      <pre><code class="lang-sql">-- T1                                          -- T2
+UPDATE accounts SET ... WHERE acctnum = 11111; -- locks 11111
+                                               UPDATE accounts SET ... WHERE acctnum = 22222; -- locks 22222
+UPDATE accounts SET ... WHERE acctnum = 22222; -- BLOCKS (T2 holds it)
+                                               UPDATE accounts SET ... WHERE acctnum = 11111; -- BLOCKS (T1 holds it)
+-- T1 is blocked on T2, and T2 is blocked on T1: a deadlock condition.</code></pre>
+      <p>Both transactions are now waiting for a lock the other holds, and neither will ever release first. After <code>deadlock_timeout</code>, Postgres detects the cycle and aborts one of them with <code>40P01</code> so the other can finish.</p>
+
+      <p>The deadlock exists <em>only</em> because the rows were locked in opposite order. Impose a single consistent global order — always lock the lower account number first — and the circular wait can never form:</p>
+      <pre><code class="lang-sql">-- Both transactions agree: always lock the LOWER acctnum first.
+-- T1                                          -- T2
+UPDATE accounts SET ... WHERE acctnum = 11111; -- locks 11111
+                                               -- wants 11111 too → simply WAITS for T1
+UPDATE accounts SET ... WHERE acctnum = 22222; -- locks 22222
+COMMIT;                                        -- releases both
+                                               UPDATE accounts SET ... WHERE acctnum = 11111; -- now proceeds
+                                               UPDATE accounts SET ... WHERE acctnum = 22222;
+                                               COMMIT;</code></pre>
+      <p>With consistent ordering there is still contention — T2 waits for T1 — but no <em>cycle</em>: a cycle would require someone holding a higher lock while waiting for a lower one, which the ordering rule forbids. This is the single most practical takeaway, and the PostgreSQL docs state it directly: the best defense is being certain that all applications acquire locks on multiple objects in a consistent order.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture two people in a narrow one-person hallway, each standing in the doorway the other needs and refusing to back up. Nobody can pass, nobody will yield — that frozen standoff is a deadlock. The wait-for graph below draws the same standoff for transactions: each node is a transaction holding a row lock, and an arrow means "is waiting for." When the arrows form a closed loop, you have a cycle, and a cycle is a deadlock. Postgres plays the bouncer: it waits about a second, spots the loop, and drags one transaction out so the other can move.</p>
+      <p>Step through the formation and resolution below. Watch the two edges close into a cycle (the warning state), then watch the detector break it by aborting a victim — which is precisely how detect-and-recover violates the <em>no-preemption</em> condition.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 360" aria-label="A wait-for graph showing two transactions forming a deadlock cycle, then the cycle being broken when a victim is aborted">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="320" y="28" text-anchor="middle" class="diagram-label" font-weight="700">Wait-for graph (node = transaction, edge = "waits for")</text>
+
+          <!-- T1 node (left) -->
+          <g id="node-t1" class="step-el">
+            <rect x="60" y="120" width="150" height="80" rx="10" class="diag-box" />
+            <text x="135" y="150" text-anchor="middle" class="diagram-label" font-weight="700">T1</text>
+            <text x="135" y="170" text-anchor="middle" class="diagram-sub">holds lock on</text>
+            <text x="135" y="186" text-anchor="middle" class="diagram-sub">row 11111</text>
+          </g>
+
+          <!-- T2 node (right) -->
+          <g id="node-t2" class="step-el">
+            <rect x="430" y="120" width="150" height="80" rx="10" class="diag-box" />
+            <text x="505" y="150" text-anchor="middle" class="diagram-label" font-weight="700">T2</text>
+            <text x="505" y="170" text-anchor="middle" class="diagram-sub">holds lock on</text>
+            <text x="505" y="186" text-anchor="middle" class="diagram-sub">row 22222</text>
+          </g>
+
+          <!-- Edge T1 -> T2 (top arc): T1 waits for 22222 held by T2 -->
+          <path id="edge-12" class="step-el diag-edge" d="M210,140 C300,95 360,95 430,140" fill="none" marker-end="url(#arrow)" />
+          <text x="320" y="92" text-anchor="middle" class="diagram-sub">T1 wants 22222 → blocks</text>
+
+          <!-- Edge T2 -> T1 (bottom arc): T2 waits for 11111 held by T1 -->
+          <path id="edge-21" class="step-el diag-edge diag-edge-warn" d="M430,180 C360,225 300,225 210,180" fill="none" marker-end="url(#arrow)" />
+          <text x="320" y="240" text-anchor="middle" class="diagram-sub diag-warn-text">T2 wants 11111 → blocks</text>
+
+          <!-- Deadlock banner -->
+          <g id="node-cycle" class="step-el">
+            <rect x="220" y="270" width="200" height="40" rx="8" class="diag-box diag-box-warn" />
+            <text x="320" y="295" text-anchor="middle" class="diagram-label">CYCLE = DEADLOCK</text>
+          </g>
+
+          <!-- Detector / abort label -->
+          <g id="node-detect" class="step-el">
+            <rect x="40" y="270" width="160" height="40" rx="8" class="diag-box" />
+            <text x="120" y="290" text-anchor="middle" class="diagram-label">detect after</text>
+            <text x="120" y="304" text-anchor="middle" class="diagram-sub">deadlock_timeout → 40P01</text>
+          </g>
+
+          <!-- Survivor result -->
+          <g id="node-survivor" class="step-el">
+            <rect x="440" y="270" width="160" height="40" rx="8" class="diag-box diag-box-result" />
+            <text x="520" y="290" text-anchor="middle" class="diagram-label">survivor proceeds</text>
+            <text x="520" y="304" text-anchor="middle" class="diagram-sub">→ COMMIT</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>The four handling strategies</h3>
+        <p>Every approach to deadlocks falls into one of four buckets, trading rigidity against wasted work:</p>
+        <ul>
+          <li><strong>Prevention</strong> — structurally deny one Coffman condition by design (e.g. resource-hierarchy lock ordering kills circular wait). Strong but rigid.</li>
+          <li><strong>Avoidance</strong> — analyze each request at runtime and grant it only if the system stays in a "safe state" (the <em>Banker's algorithm</em>). Needs every transaction's maximum needs known in advance, so it is almost never used in real databases.</li>
+          <li><strong>Detection + recovery</strong> — let deadlocks happen, maintain a wait-for graph, and on finding a cycle abort a victim (breaking no-preemption) so the others proceed. <strong>This is what Postgres and MySQL do.</strong></li>
+          <li><strong>Ignore (the Ostrich algorithm)</strong> — assume a deadlock will never occur. Some operating systems do this; databases do not.</li>
+        </ul>
+
+        <h3>Every strategy attacks exactly one Coffman condition</h3>
+        <p>This table is the master key spelled out: each row removes one of the four conditions, and removing any one makes deadlock impossible. The shading tracks how practical each attack is for a real database under write workloads.</p>
+        <table class="compare">
+          <thead><tr><th>Condition attacked</th><th>How</th><th>Verdict for real DBs</th></tr></thead>
+          <tbody>
+            <tr><td>Mutual exclusion</td><td>lock-free structures / MVCC reads (no read locks)</td><td data-score="35">not possible for writes</td></tr>
+            <tr><td>Hold and wait</td><td>grab <em>all</em> locks atomically upfront = Conservative 2PL</td><td data-score="50">kills concurrency; needs predeclared lock set</td></tr>
+            <tr><td>No preemption</td><td>abort + roll back a victim (steal its locks)</td><td data-score="80">wasted work, but what real DBs actually do</td></tr>
+            <tr><td>Circular wait</td><td>global lock ordering (always lock 11111 before 22222)</td><td data-score="92">the practical app-level fix</td></tr>
+          </tbody>
+        </table>
+        <p>Note that pure reads cannot deadlock: shared (S) locks are compatible with each other, so mutual exclusion only bites on writes. And <strong>Conservative 2PL</strong> is deadlock-free precisely because it eliminates hold-and-wait — a transaction acquires its entire lock set atomically at the start and so never holds one lock while waiting for another.</p>
+
+        <h3>How Postgres handles it, step by step</h3>
+        <p>Postgres uses detection + recovery with a deliberate delay. A blocked transaction first waits <code>deadlock_timeout</code> (default 1s) before detection runs at all — because building and cycle-checking the wait-for graph is expensive, and the overwhelming majority of waits are ordinary contention that clears on its own. Only if the transaction is <em>still</em> blocked after the timeout does Postgres build the graph and look for a cycle. On finding one it picks a victim (exactly which is hard to predict), aborts it with SQLSTATE <code>40P01</code>, and lets the rest complete. The application must catch <code>40P01</code> and retry — the same retry discipline as the <code>40001</code> serialization failures from isolation levels: different code, same contract.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> retrying the aborted transaction in a tight, no-delay loop. This converts a cleanly-resolved deadlock into a <strong>livelock</strong> — the transactions are no longer frozen, but they keep retrying in lockstep and colliding again, changing state forever while making no progress.
+          <pre><code class="lang-python"># BROKEN: no-delay retry → livelock (both retry instantly, re-collide, repeat)
+while True:
+    try:
+        run_transaction()      # T1 and T2 both abort, both retry at once…
+        break
+    except DeadlockDetected:   # SQLSTATE 40P01
+        continue               # …and immediately deadlock again, forever
+
+# FIX: randomized exponential backoff
+delay = base
+for attempt in range(max_retries):
+    try:
+        run_transaction()
+        break
+    except DeadlockDetected:
+        time.sleep(random.uniform(0, delay))   # jitter breaks symmetry
+        delay *= 2                              # backoff spreads load</code></pre>
+          <p>Why it breaks: with zero delay both victims retry simultaneously and re-enter the same conflict, so they collide again and again. The fix is <strong>randomized exponential backoff</strong>: the random jitter breaks the lockstep symmetry so the two transactions stop colliding at the same instant, and the exponential backoff spreads retries out so load eases. The clean distinction to remember — a deadlock is <em>frozen</em> (no state change), a livelock is <em>active but stuck</em> (state changes, no progress).</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The pessimistic locking that makes deadlocks possible in the first place — and whose Conservative variant eliminates hold-and-wait to be deadlock-free.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>The 40001 serialization-failure retry contract is the sibling of the 40P01 deadlock retry: different code, same catch-and-retry discipline.</span>
+      </a>
+      <a class="related-card" href="../acid-properties/index.html" data-entry="acid-properties">
+        <strong>ACID Properties</strong>
+        <span>Aborting a deadlock victim relies on atomicity — the rolled-back transaction leaves no partial trace, so a clean retry is safe.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://en.wikipedia.org/wiki/Deadlock_(computer_science)" target="_blank" rel="noopener">Wikipedia — Deadlock (computer science)</a> — fetched 2026-06-15</li>
+          <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html" target="_blank" rel="noopener">PostgreSQL Documentation — Explicit Locking (Deadlocks)</a> — fetched 2026-06-15</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">In the two-<code>UPDATE</code> opposite-order deadlock, which Coffman condition does enforcing "consistent lock ordering" eliminate?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">No preemption — the database can now yank a lock from a transaction.</button>
+            <button class="option" data-correct="true">Circular wait — if every transaction locks in the same global order, a cycle is impossible.</button>
+            <button class="option" data-correct="false">Mutual exclusion — the rows become shareable so writes no longer conflict.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A cycle requires someone holding a higher-ordered lock while waiting for a lower-ordered one — which a consistent global lock order forbids. So circular wait can never form, even though ordinary contention (waiting) still happens.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A wait-for graph has nodes for transactions and an edge T1→T2 meaning "T1 waits for a lock T2 holds." What signals a deadlock, and which Coffman condition does detect-and-abort break?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>A <strong>cycle</strong> in the wait-for graph is exactly a deadlock. Detect-and-abort resolves it by rolling back a victim, which forcibly steals that transaction's locks — breaking <strong>no preemption</strong> (the condition that a lock is released only voluntarily). Note nodes are transactions only; the resource-allocation graph is the fuller version that also includes resource nodes, but databases use the transaction-only wait-for projection.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does Postgres wait <code>deadlock_timeout</code> (default 1s) before running deadlock detection, instead of checking immediately on every block?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Building and cycle-checking the wait-for graph is expensive, and the overwhelming majority of waits are ordinary contention that clears on its own within a fraction of a second. Postgres optimizes for that common case: it only pays the detection cost if a transaction is <em>still</em> blocked after the timeout, by which point a real cycle is far more likely.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Conservative 2PL is deadlock-free. Which Coffman condition does it eliminate, and how?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Circular wait — by always aborting the transaction with the lowest ID.</button>
+            <button class="option" data-correct="true">Hold and wait — by acquiring the entire lock set atomically upfront, so a transaction never holds one lock while waiting for another.</button>
+            <button class="option" data-correct="false">No preemption — by letting the scheduler revoke locks mid-transaction.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Conservative 2PL grabs all needed locks at once before doing any work. Since a transaction either gets everything or waits with nothing held, it can never be in the "holding some while requesting more" state — hold-and-wait is structurally gone. The cost is concurrency and needing the lock set predeclared.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Two transactions keep aborting on deadlock, retrying instantly, and re-colliding forever without ever committing. What is this called, and what is the fix?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>This is a <strong>livelock</strong>: unlike a deadlock (frozen, no state change), the transactions are active and changing state but making no progress. The fix is <strong>randomized exponential backoff</strong> — the random jitter breaks the lockstep symmetry so the two stop retrying at the same instant, and the exponential backoff spreads retries out over time to ease load.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: deadlock formation & resolution) ─
+    const steps = [
+      { activate: ['#node-t1'],
+        explanation: 'T1 runs UPDATE … WHERE acctnum = 11111 and acquires an exclusive lock on row 11111. No conflict yet — it is the only holder.' },
+      { activate: ['#node-t1', '#node-t2'],
+        explanation: 'T2 runs UPDATE … WHERE acctnum = 22222 and acquires a lock on row 22222. Two transactions, two disjoint locks, still no problem.' },
+      { activate: ['#node-t1', '#node-t2', '#edge-12'],
+        explanation: 'T1 now requests row 22222 — but T2 holds it, so T1 blocks. Draw edge T1→T2: "T1 waits for a lock T2 holds." This is the hold-and-wait condition in action.' },
+      { activate: ['#node-t1', '#node-t2', '#edge-12', '#edge-21', '#node-cycle'],
+        explanation: 'T2 requests row 11111 — but T1 holds it, so T2 blocks too. Draw edge T2→T1. The two edges now close into a cycle: this circular wait is, by definition, a deadlock. Neither will yield (no preemption), so they are frozen forever.' },
+      { activate: ['#edge-12', '#edge-21', '#node-cycle', '#node-detect'],
+        explanation: 'After deadlock_timeout (default 1s), Postgres builds the wait-for graph, finds the cycle, and aborts a victim with SQLSTATE 40P01. Forcibly rolling back a transaction steals its locks — this is how detect-and-recover breaks the no-preemption condition.' },
+      { activate: ['#node-detect', '#node-survivor'],
+        explanation: 'With the victim rolled back, the cycle is broken: the survivor acquires the freed lock and proceeds to COMMIT. The aborted transaction catches 40P01 and retries — ideally after the app adopts consistent lock ordering so the cycle never recurs.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'two-phase-locking': { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres’s MVCC+strict-2PL hybrid.' },
+      'isolation-levels':  { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'acid-properties':   { title: 'ACID Properties', summary: 'The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the app’s job, isolation as a tunable dial, and the wedding-ceremony model.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

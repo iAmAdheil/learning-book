@@ -1,0 +1,595 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific diagram rules: the 802.1Q tag must fully appear/disappear,
+       not merely dim, and VLAN membership is colour-coded inside the SVG. */
+    .diagram-svg .tag-el { opacity: 0; transition: opacity 300ms ease; }
+    .diagram-svg .tag-el.active { opacity: 1; }
+    .diagram-svg .vlan10 { fill: var(--good-soft); stroke: var(--good); }
+    .diagram-svg .vlan20 { fill: var(--warn-soft); stroke: var(--warn); }
+    .diagram-svg .tiny { fill: var(--text-muted); font-family: var(--mono); font-size: 10px; }
+    .diagram-svg .mono { fill: var(--text); font-family: var(--mono); font-size: 11px; }
+    .diagram-svg .trunk-line { stroke: var(--text-muted); stroke-width: 4; fill: none; }
+    .diagram-svg .trunk-line.active { stroke: var(--accent); }
+    .diagram-svg { max-height: 460px; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A plain switch gives you exactly <strong>one broadcast domain</strong>: every device hears every broadcast, and the only classic fix is buying more switches. A <strong>VLAN</strong> slices one physical switch into several independent virtual switches in software — each its own broadcast domain, each unable to reach the others at Layer 2. Two port roles and four extra bytes on the wire make the whole thing work, and end devices never find out it happened.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">vlan</span>
+        <span class="badge tag">802.1q</span>
+        <span class="badge tag">tagging</span>
+        <span class="badge tag">access-port</span>
+        <span class="badge tag">trunk-port</span>
+        <span class="badge tag">native-vlan</span>
+        <span class="badge tag">broadcast-domain</span>
+        <span class="badge tag">segmentation</span>
+        <span class="badge tag">vlan-hopping</span>
+        <span class="badge tag">inter-vlan-routing</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>VLAN (Virtual LAN)</dt>
+        <dd>A logically separate <strong>broadcast domain</strong> — a region within which a broadcast frame reaches everyone and outside which it reaches no one — created in software on a shared physical switch. The switch keeps a <strong>separate MAC address table (CAM table) per VLAN</strong> and will not forward a frame between VLANs. To the attached devices it is <em>exactly</em> as though they sat on different physical switches with no cable between them.</dd>
+
+        <dt>Access port</dt>
+        <dd>A switch port facing an <strong>end device</strong> (PC, printer, IP phone). It belongs to exactly <strong>one</strong> VLAN, set by port configuration, and frames on that wire are <strong>untagged</strong>. The device has no idea VLANs exist; the switch assigns VLAN membership on the device's behalf.</dd>
+
+        <dt>Trunk port</dt>
+        <dd>A switch port facing <strong>another switch</strong> (or a router). It carries <strong>many</strong> VLANs over one cable simultaneously, so every frame must be labelled with which VLAN it belongs to. Both ends must understand the labelling. The alternative — one cable per VLAN — needs 50 cables for 50 VLANs; a trunk multiplexes them onto one.</dd>
+
+        <dt>802.1Q tag</dt>
+        <dd>The <strong>4-byte</strong> label defined by IEEE 802.1Q, inserted directly after the source MAC address. It carries a <strong>12-bit VLAN ID (VID)</strong> identifying the frame's VLAN. Tags exist only on trunk links: added on the way into a trunk, stripped on the way out to an access port.</dd>
+
+        <dt>Native VLAN</dt>
+        <dd>The one VLAN on a trunk whose frames are sent <strong>untagged</strong>, for backwards compatibility with equipment that does not speak 802.1Q. It defaults to VLAN 1 and is the sharp edge of the design: an untagged VLAN on a tagged link is what makes double-tagging attacks possible.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>Take one 24-port switch serving three departments. Without VLANs, a broadcast from an engineering workstation is delivered to every finance and HR machine on the switch — wasted bandwidth, wasted CPU on every NIC, and zero isolation. Three VLANs fix that with configuration alone:</p>
+
+      <pre><code class="lang-text">! Create the VLAN
+Switch(config)# vlan 10
+Switch(config-vlan)# name ENGINEERING
+
+! Access port — one VLAN, facing a PC
+Switch(config)# interface FastEthernet0/1
+Switch(config-if)# switchport mode access
+Switch(config-if)# switchport access vlan 10
+
+! Trunk port — many VLANs, facing another switch
+Switch(config)# interface GigabitEthernet0/1
+Switch(config-if)# switchport mode trunk
+Switch(config-if)# switchport trunk allowed vlan 10,20,30
+Switch(config-if)# switchport trunk native vlan 999    ! unused VLAN — hardening</code></pre>
+
+      <p>Two lines carry almost all of the meaning. <code>switchport mode access</code> + <code>switchport access vlan 10</code> says: <em>whatever arrives on this wire untagged belongs to VLAN 10, and nothing from any other VLAN may ever leave here.</em> <code>switchport mode trunk</code> says the opposite: <em>this wire carries several VLANs, so label everything.</em> <code>switchport trunk allowed vlan</code> then <strong>prunes</strong> the trunk down to the VLANs that genuinely need to cross it — a performance and a security practice at once, because a VLAN not on the allowed list simply cannot traverse that link.</p>
+
+      <p>The tag those trunk frames carry is four bytes wide, and it is deliberately placed where a receiver that has never heard of VLANs would look for the EtherType:</p>
+
+      <table class="compare">
+        <thead>
+          <tr><th>Field</th><th>Size</th><th>Purpose</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>TPID</td><td>2 bytes</td><td>Always <code>0x8100</code>. It sits in the EtherType position, signalling "a tag follows".</td></tr>
+          <tr><td>PCP</td><td>3 bits</td><td>Priority Code Point (802.1p) — the QoS class of this frame.</td></tr>
+          <tr><td>DEI</td><td>1 bit</td><td>Drop-eligible indicator: mark this frame as expendable under congestion.</td></tr>
+          <tr><td>VLAN ID</td><td>12 bits</td><td>Which VLAN the frame belongs to. This is the field that does the work.</td></tr>
+        </tbody>
+      </table>
+
+      <p>The <strong>TPID trick</strong> is the elegant part. A receiver reads the two bytes where the EtherType normally lives, sees <code>0x8100</code> — a value that is not a real Layer 3 protocol — and concludes <em>"this frame is tagged; the real EtherType is four bytes further along."</em> In-band signalling that costs nothing when unused and stays backwards compatible.</p>
+
+      <p>Twelve bits give 4096 IDs, of which <strong>1–4094</strong> are usable (0 and 4095 are reserved). <strong>VLAN 1 is the default</strong> — every port starts there — and precisely because it is the default, production traffic should not live on it. The tag also pushes the maximum Ethernet frame from <strong>1518 to 1522 bytes</strong>, which is why switch and NIC hardware must explicitly support "baby giant" frames on trunk links.</p>
+
+      <p>Finally, VLANs and IP subnets are paired 1:1 almost universally:</p>
+
+      <table class="compare">
+        <thead><tr><th>VLAN</th><th>Purpose</th><th>Subnet</th></tr></thead>
+        <tbody>
+          <tr><td>10</td><td>Engineering</td><td><code>192.168.10.0/24</code></td></tr>
+          <tr><td>20</td><td>HR</td><td><code>192.168.20.0/24</code></td></tr>
+          <tr><td>30</td><td>Finance</td><td><code>192.168.30.0/24</code></td></tr>
+        </tbody>
+      </table>
+
+      <p>That convention is not arbitrary — it falls out of the mechanics. A VLAN is one broadcast domain; hosts in one subnet must be able to resolve each other's MAC addresses, and that resolution is a <em>broadcast</em>; therefore a subnet has to fit inside a single broadcast domain. <strong>VLAN boundary = broadcast boundary = subnet boundary.</strong> Crossing VLANs therefore means crossing subnets, which means <strong>routing</strong> — a Layer 3 device (a router, or a switch doing routing on a virtual interface). Switches segment; routers connect the segments.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Think of the tag as a <em>visitor badge that only exists inside the corridor between two buildings</em>. Inside a building, everyone in a department already knows where they belong — no badge needed. But the shared corridor carries people from every department at once, so at the door you get a badge stamped with your department, and at the far door the badge is taken off you before you walk in. Nobody in either building ever sees a badge. That is exactly the life of an 802.1Q tag: it is applied entering a trunk and removed leaving to an access port, so end devices stay completely VLAN-unaware.</p>
+
+      <p>Step through the diagram below and watch the four tag bytes physically appear on the frame as it enters the trunk and vanish as it leaves. The last two steps switch to the harder case — what happens when the destination MAC is <em>unknown</em> and the switch has to flood.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 760 420" aria-label="A frame travelling from PC-A on a VLAN 10 access port, across a trunk where a 4-byte 802.1Q tag with VLAN ID 10 is added, to PC-C on a VLAN 10 access port where the tag is stripped; VLAN 20 hosts receive nothing.">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ═══ Left-hand hosts ═══ -->
+          <g id="host-a" class="step-el">
+            <rect x="8" y="30" width="112" height="42" class="node-rect vlan10" />
+            <text x="64" y="47" text-anchor="middle" class="node-text">PC-A</text>
+            <text x="64" y="63" text-anchor="middle" class="tiny">VLAN 10</text>
+          </g>
+          <g id="host-b" class="step-el">
+            <rect x="8" y="150" width="112" height="42" class="node-rect vlan20" />
+            <text x="64" y="167" text-anchor="middle" class="node-text">PC-B</text>
+            <text x="64" y="183" text-anchor="middle" class="tiny">VLAN 20</text>
+          </g>
+          <g id="host-d" class="step-el">
+            <rect x="8" y="210" width="112" height="42" class="node-rect vlan10" />
+            <text x="64" y="227" text-anchor="middle" class="node-text">PC-D</text>
+            <text x="64" y="243" text-anchor="middle" class="tiny">VLAN 10</text>
+          </g>
+
+          <!-- ═══ Access links, left ═══ -->
+          <line id="link-a" class="step-el edge-line" x1="120" y1="51" x2="212" y2="70" marker-end="url(#arrow)" />
+          <text x="140" y="42" class="tiny">access · untagged</text>
+          <line id="link-d" class="step-el edge-line" x1="120" y1="231" x2="212" y2="212" marker-end="url(#arrow)" />
+          <line id="link-b" class="step-el edge-line" x1="120" y1="171" x2="212" y2="160" marker-end="url(#arrow)" />
+
+          <!-- ═══ SW1 ═══ -->
+          <g id="sw1" class="step-el">
+            <rect x="214" y="45" width="118" height="180" class="node-rect" />
+            <text x="273" y="70" text-anchor="middle" class="node-text">SW1</text>
+            <text x="273" y="102" text-anchor="middle" class="tiny">CAM table</text>
+            <text x="273" y="118" text-anchor="middle" class="tiny">VLAN 10</text>
+            <text x="273" y="140" text-anchor="middle" class="tiny">CAM table</text>
+            <text x="273" y="156" text-anchor="middle" class="tiny">VLAN 20</text>
+            <text x="273" y="190" text-anchor="middle" class="tiny">separate table</text>
+            <text x="273" y="204" text-anchor="middle" class="tiny">per VLAN</text>
+          </g>
+
+          <!-- ═══ Trunk ═══ -->
+          <line id="trunk" class="step-el trunk-line" x1="332" y1="135" x2="428" y2="135" />
+          <text x="380" y="118" text-anchor="middle" class="tiny">trunk</text>
+          <text x="380" y="160" text-anchor="middle" class="tiny">tagged</text>
+          <text x="380" y="173" text-anchor="middle" class="tiny">10, 20 allowed</text>
+
+          <!-- ═══ SW2 ═══ -->
+          <g id="sw2" class="step-el">
+            <rect x="428" y="45" width="118" height="180" class="node-rect" />
+            <text x="487" y="70" text-anchor="middle" class="node-text">SW2</text>
+            <text x="487" y="102" text-anchor="middle" class="tiny">CAM table</text>
+            <text x="487" y="118" text-anchor="middle" class="tiny">VLAN 10</text>
+            <text x="487" y="140" text-anchor="middle" class="tiny">CAM table</text>
+            <text x="487" y="156" text-anchor="middle" class="tiny">VLAN 20</text>
+            <text x="487" y="190" text-anchor="middle" class="tiny">reads VID</text>
+            <text x="487" y="204" text-anchor="middle" class="tiny">to pick one</text>
+          </g>
+
+          <!-- ═══ Access links, right ═══ -->
+          <line id="link-c" class="step-el edge-line" x1="546" y1="70" x2="638" y2="51" marker-end="url(#arrow)" />
+          <text x="556" y="42" class="tiny">access · untagged</text>
+          <line id="link-e" class="step-el edge-line" x1="546" y1="200" x2="638" y2="231" marker-end="url(#arrow)" />
+
+          <!-- ═══ Right-hand hosts ═══ -->
+          <g id="host-c" class="step-el">
+            <rect x="640" y="30" width="112" height="42" class="node-rect vlan10" />
+            <text x="696" y="47" text-anchor="middle" class="node-text">PC-C</text>
+            <text x="696" y="63" text-anchor="middle" class="tiny">VLAN 10</text>
+          </g>
+          <g id="host-e" class="step-el">
+            <rect x="640" y="210" width="112" height="42" class="node-rect vlan20" />
+            <text x="696" y="227" text-anchor="middle" class="node-text">PC-E</text>
+            <text x="696" y="243" text-anchor="middle" class="tiny">VLAN 20</text>
+          </g>
+
+          <!-- ═══ The frame on the wire ═══ -->
+          <text x="8" y="296" class="label-text">The frame on the wire right now</text>
+
+          <rect x="8" y="308" width="112" height="46" class="node-rect" />
+          <text x="64" y="330" text-anchor="middle" class="mono">Dest MAC</text>
+          <text x="64" y="346" text-anchor="middle" class="tiny">6 B</text>
+
+          <rect x="124" y="308" width="112" height="46" class="node-rect" />
+          <text x="180" y="330" text-anchor="middle" class="mono">Src MAC</text>
+          <text x="180" y="346" text-anchor="middle" class="tiny">6 B</text>
+
+          <!-- the tag: appears and disappears -->
+          <g id="tag-block" class="tag-el">
+            <rect x="240" y="302" width="176" height="58" class="node-rect vlan10" />
+            <text x="328" y="322" text-anchor="middle" class="mono">802.1Q TAG</text>
+            <text x="328" y="338" text-anchor="middle" class="tiny">TPID 0x8100 · PCP · DEI</text>
+            <text x="328" y="352" text-anchor="middle" class="mono">VID = 10</text>
+            <text x="328" y="378" text-anchor="middle" class="tiny">+4 B · 1518 → 1522 max</text>
+          </g>
+
+          <rect x="420" y="308" width="96" height="46" class="node-rect" />
+          <text x="468" y="330" text-anchor="middle" class="mono">EtherType</text>
+          <text x="468" y="346" text-anchor="middle" class="tiny">2 B</text>
+
+          <rect x="520" y="308" width="140" height="46" class="node-rect" />
+          <text x="590" y="336" text-anchor="middle" class="mono">Payload</text>
+
+          <rect x="664" y="308" width="88" height="46" class="node-rect" />
+          <text x="708" y="330" text-anchor="middle" class="mono">FCS</text>
+          <text x="708" y="346" text-anchor="middle" class="tiny">4 B</text>
+
+          <text id="frame-caption" x="8" y="404" class="label-text">Untagged — the ordinary Ethernet frame PC-A put on the wire.</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>Two things are worth pinning down from that walkthrough. First, <strong>the tag never touches an end device</strong> — which is the entire reason VLANs deploy against unmodified PCs, printers and appliances. Second, <strong>every lookup is scoped to a VLAN</strong>: SW2 does not consult "its MAC table", it consults <em>the VLAN 10 table</em>, chosen by the VID it just read off the tag. Everything else about VLAN behaviour follows from those two facts.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Flooding is scoped to the VLAN — and floods do cross trunks</h3>
+
+        <div class="antipattern">
+          <strong>Common misconception:</strong> "flooding only goes out access ports in the VLAN; trunks are for known unicast traffic." Not so. A flood goes out <strong>trunk ports too</strong>, tagged.
+          <pre><code class="lang-text">flood set = (all access ports in VLAN X)
+          + (all trunk ports that allow VLAN X)
+          − (the arrival port)
+
+          untagged on the access ports, tagged on the trunks</code></pre>
+          <p>A single flood event therefore produces <em>both</em> untagged copies (to end devices) and tagged copies (to neighbouring switches) from the same frame. Ports in other VLANs receive nothing at all.</p>
+        </div>
+
+        <p>Three consequences fall out of that rule:</p>
+        <ul>
+          <li><strong>The flood domain is the VLAN, not the switch.</strong> A VLAN spans multiple switches over trunks, so a flood crosses the trunk and continues flooding on the far switch.</li>
+          <li><strong><code>switchport trunk allowed vlan</code> gates it.</strong> If VLAN 10 is not allowed on a trunk, VLAN 10 floods cannot traverse it. This is why pruning is a genuine performance practice: it literally shortens the distance flooded traffic travels.</li>
+          <li><strong>The lookup is per-VLAN.</strong> "Unknown destination in VLAN 10" is a completely separate question from VLAN 20's table. Each VLAN floods independently of the others.</li>
+        </ul>
+
+        <p>Traced concretely on the topology from the diagram — PC-A in VLAN 10 sends to a destination SW1 has never seen:</p>
+
+        <table class="compare">
+          <thead><tr><th>Where</th><th>What happens</th></tr></thead>
+          <tbody>
+            <tr><td>SW1 learns</td><td>Records <code>A → port 1</code> in the <strong>VLAN 10</strong> table (learning is always from the source address).</td></tr>
+            <tr><td>SW1 decides</td><td>Destination unknown in VLAN 10's table → <strong>flood within VLAN 10</strong>.</td></tr>
+            <tr><td data-score="90">→ PC-D access port</td><td data-score="90">Sent, <strong>untagged</strong>.</td></tr>
+            <tr><td data-score="90">→ trunk to SW2</td><td data-score="90">Sent, <strong>tagged VID 10</strong>.</td></tr>
+            <tr><td data-score="20">→ PC-B access port</td><td data-score="20">Not sent — PC-B is in VLAN 20.</td></tr>
+            <tr><td>SW2 receives on trunk</td><td>Reads <strong>VID 10</strong>; learns <code>A → trunk port</code> in <em>its</em> VLAN 10 table.</td></tr>
+            <tr><td>SW2 decides</td><td>Still unknown → floods within VLAN 10.</td></tr>
+            <tr><td data-score="90">→ PC-C access port</td><td data-score="90">Sent, <strong>untagged</strong>.</td></tr>
+            <tr><td data-score="20">→ PC-E access port</td><td data-score="20">Not sent — PC-E is in VLAN 20.</td></tr>
+            <tr><td data-score="20">→ back out the trunk</td><td data-score="20">Never — that is the arrival port.</td></tr>
+          </tbody>
+        </table>
+
+        <p>Notice what SW2 learned: <strong>A lives out the trunk port</strong>. Same learn-from-source rule as always, just pointing at a trunk instead of an access port. When the reply comes back, SW2 forwards it out the trunk and SW1 forwards it out port 1 — flooding stops and ordinary unicast takes over, now spanning two switches.</p>
+
+        <p>And this sets up the next problem. A flooded frame propagates across <em>every</em> trunk in the VLAN. Give SW1 and SW2 <strong>two</strong> trunk links for redundancy and the flood goes out trunk A, SW2 floods it out trunk B, SW1 floods it back out trunk A, forever. Ethernet frames carry <strong>no TTL</strong> — that is an IP header field, and this is pure Layer 2 — so the frame never expires. The result is a broadcast storm that saturates the links and melts the switches within seconds. Preventing exactly that is the job of Spanning Tree Protocol.</p>
+
+        <h3>The native VLAN and double-tagging</h3>
+
+        <p>Because the native VLAN travels untagged on a link where everything else is tagged, an attacker can exploit the asymmetry with a frame carrying <strong>two</strong> stacked tags. The first switch strips the outer tag (it matches the native VLAN, so the switch treats the frame as native-VLAN traffic) and forwards what remains onto the trunk. The second switch now sees a perfectly ordinary tagged frame — the <em>inner</em> tag — and delivers it into a VLAN the attacker was never permitted to reach. The traffic is one-way, but for many attacks that is enough.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> leaving the trunk's native VLAN at its default of VLAN 1, which is also where every unconfigured access port lives.
+          <pre><code class="lang-text">Switch(config-if)# switchport mode trunk
+Switch(config-if)# switchport trunk allowed vlan 10,20,30
+! native VLAN left implicit → VLAN 1</code></pre>
+          <p>Why it breaks: VLAN 1 is simultaneously the default access VLAN <em>and</em> the default untagged VLAN on the trunk, so an attacker on any un-provisioned port is already sitting in the VLAN whose outer tag will be silently stripped. Set the native VLAN to a dedicated, unused ID that no host is ever placed in (<code>switchport trunk native vlan 999</code>), or configure the trunk to tag every VLAN including the native one.</p>
+        </div>
+
+        <h3>Remaining traps</h3>
+        <ul>
+          <li><strong>"VLANs let devices in different VLANs talk."</strong> Exactly backwards — VLANs <em>prevent</em> Layer 2 communication between them. Crossing requires a router. The feature that does the crossing is inter-VLAN routing, implemented either as a router with tagged subinterfaces on a single trunk ("router-on-a-stick") or as virtual routed interfaces inside a Layer 3 switch.</li>
+          <li><strong>The VLAN must exist and be allowed on <em>both</em> switches.</strong> Creating VLAN 30 on SW1 and forgetting SW2, or omitting it from the trunk's allowed list, produces traffic that vanishes silently with no error anywhere.</li>
+          <li><strong>Access-versus-trunk misconfiguration is a classic outage.</strong> An access port where a trunk was meant drops every tagged frame; a trunk where an access port was meant hands an end device frames it cannot parse.</li>
+          <li><strong>Not every device is VLAN-unaware.</strong> The general rule holds for PCs and printers, but IP phones and hypervisor hosts are routinely given trunk ports and do handle tags themselves — a phone typically carries a tagged voice VLAN and passes the untagged PC traffic through.</li>
+          <li><strong>A VLAN is not a firewall.</strong> It is good segmentation and it stops broadcast leakage, but hopping attacks and simple misconfiguration both cross it. Treat it as a structural boundary, not a security control.</li>
+        </ul>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../how-switches-work/index.html" data-entry="how-switches-work">
+        <strong>How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter</strong>
+        <span>The prerequisite: one switch = one broadcast domain, and the forward/flood/filter rule that VLANs re-scope per VLAN.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>The frame the 4-byte tag is inserted into, and the EtherType field whose position the <code>0x8100</code> TPID borrows.</span>
+      </a>
+      <a class="related-card" href="../spanning-tree-protocol/index.html" data-entry="spanning-tree-protocol">
+        <strong>Spanning Tree Protocol (STP/RSTP) — Loop Prevention &amp; Root Bridge Election</strong>
+        <span>The answer to the broadcast storm that VLAN-scoped flooding creates the moment a trunk is made redundant.</span>
+      </a>
+      <a class="related-card" href="../arp/index.html" data-entry="arp">
+        <strong>ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP</strong>
+        <span>Why one subnet must fit inside one VLAN: address resolution is a broadcast, so it stops dead at the VLAN edge.</span>
+      </a>
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model — What Each Layer Does and Why the Split Exists</strong>
+        <span>The L2-versus-L3 split that makes "switches segment, routers connect the segments" more than a slogan.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>IEEE 802.1Q — Virtual Bridged Local Area Networks</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">PC-A is in VLAN 10 and PC-B is in VLAN 20 on the <em>same</em> switch, and someone has given both of them addresses inside <code>192.168.1.0/24</code>. Can PC-A ping PC-B?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Yes — they are on the same switch and the same subnet, so the switch forwards between them directly.</button>
+            <button class="option" data-correct="true">No — different VLANs are different broadcast domains with separate MAC tables, and the matching subnet actually makes it worse.</button>
+            <button class="option" data-correct="false">Only after the switch adds an 802.1Q tag identifying which VLAN each host belongs to.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The switch keeps separate tables per VLAN and never forwards between them, so PC-A's address-resolution broadcast never leaves VLAN 10 and it never learns PC-B's MAC. The shared subnet compounds the failure: PC-A believes PC-B is local, so it will not even hand the packet to a gateway. The fix is a router <em>plus</em> proper per-VLAN subnets.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does a trunk port need tagging when an access port does not?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Because trunk links are longer and the tag carries error-detection information the FCS cannot provide.</button>
+            <button class="option" data-correct="false">Because switches speak 802.1Q to each other while end devices only speak plain Ethernet, so the tag is a protocol-version marker.</button>
+            <button class="option" data-correct="true">Because a trunk multiplexes many VLANs onto one cable, so arriving frames would otherwise be ambiguous — while an access port carries exactly one VLAN, already known from its configuration.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The tag exists to disambiguate. On a trunk the receiving switch cannot tell VLAN 10 traffic from VLAN 20 traffic without a label; on an access port there is nothing to disambiguate, since every frame on that wire belongs to the one configured VLAN — and end devices should not have to understand tagging at all.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A frame arrives on SW1's VLAN 10 access port with a destination MAC that appears in no table. SW1 has one trunk to SW2 (VLANs 10 and 20 allowed), two other VLAN 10 access ports and three VLAN 20 access ports. Exactly which ports does the frame leave from, and in what form?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>It leaves the <strong>two other VLAN 10 access ports untagged</strong> and the <strong>trunk tagged with VID 10</strong> — four copies in total, minus nothing, since the arrival port is excluded by definition. The three VLAN 20 access ports get nothing. The rule is <em>flood set = all access ports in the VLAN + all trunks that allow the VLAN − the arrival port</em>, untagged on access, tagged on trunks. SW2 then receives the tagged copy, learns the source MAC against <em>its</em> trunk port in <em>its</em> VLAN 10 table, and floods within VLAN 10 on its own side — but never back out the trunk it arrived on.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What would happen if you added a second trunk link between SW1 and SW2 for redundancy, and why does the Ethernet header make the outcome so much worse than the equivalent situation in IP?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Any flooded or broadcast frame in a VLAN allowed on both trunks would loop indefinitely: SW1 floods it out trunk A, SW2 floods it out trunk B, SW1 floods it back out trunk A, and so on. Each pass multiplies the copies, saturating both links and driving the switches' CPUs to the floor within seconds — a broadcast storm. It is unrecoverable rather than merely slow because the <strong>Ethernet frame has no TTL field</strong>. Time-to-live is an IP header field, and this loop is happening purely at Layer 2, so nothing decrements and nothing ever expires the frame. Spanning Tree Protocol exists precisely to detect the redundant path and place one of the two trunk ports into a blocking state, leaving a loop-free active topology while keeping the second link available as a standby.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (data flow: tag add / strip across a trunk) ──
+    const frameCaption = document.getElementById('frame-caption');
+    const steps = [
+      {
+        activate: ['#host-a', '#link-a'],
+        caption: 'Untagged — the ordinary Ethernet frame PC-A put on the wire.',
+        explanation: 'PC-A sends a completely ordinary untagged Ethernet frame into SW1’s access port. It has no idea VLANs exist and no way to express one — the frame below carries no tag.'
+      },
+      {
+        activate: ['#sw1'],
+        caption: 'Untagged — but SW1 now associates the frame with VLAN 10 internally.',
+        explanation: 'SW1 assigns VLAN membership from the port’s configuration: this access port is “switchport access vlan 10”, so the frame is VLAN 10. SW1 learns the source MAC into its VLAN 10 table specifically, and looks up the destination there and nowhere else.'
+      },
+      {
+        activate: ['#sw1', '#trunk', '#tag-block'],
+        caption: 'Tagged — four bytes inserted after the source MAC, VID = 10.',
+        explanation: 'Sending out the trunk, SW1 inserts the 4-byte 802.1Q tag. TPID 0x8100 occupies the EtherType position to signal “a tag follows”, and the 12-bit VLAN ID says 10. The frame’s maximum size rises from 1518 to 1522 bytes.'
+      },
+      {
+        activate: ['#trunk', '#sw2', '#tag-block'],
+        caption: 'Tagged — SW2 reads VID 10 off the wire to choose a lookup table.',
+        explanation: 'SW2 reads VID 10 and uses it to pick which table to consult — the VLAN 10 table only. The VID is not just a label in transit; it is the key that scopes every learning and forwarding decision on the far switch.'
+      },
+      {
+        activate: ['#sw2', '#link-c'],
+        caption: 'Untagged again — SW2 strips the tag on the way out to an access port.',
+        explanation: 'Forwarding out PC-C’s access port, SW2 removes the tag. Tags exist only on trunk links: added entering one, stripped leaving to an access port.'
+      },
+      {
+        activate: ['#host-c'],
+        caption: 'Untagged — byte-for-byte what PC-A originally sent.',
+        explanation: 'PC-C receives a normal untagged frame, exactly as PC-A sent it, and is as VLAN-unaware as PC-A was. This is why VLANs deploy against completely unmodified end devices — the switches do all the work.'
+      },
+      {
+        activate: ['#sw1', '#link-d', '#trunk', '#tag-block'],
+        caption: 'One flood, two forms at once: untagged toward PC-D, tagged onto the trunk.',
+        explanation: 'Now the harder case. If the destination is unknown in VLAN 10’s table, SW1 floods — and the flood goes out trunk ports as well as access ports. PC-D gets an untagged copy; the trunk gets a copy tagged VID 10. PC-B, in VLAN 20, gets nothing: the flood set is scoped to the VLAN, not to the switch.'
+      },
+      {
+        activate: ['#sw2', '#link-c', '#host-c'],
+        caption: 'Untagged on the far side — the flood continues, still confined to VLAN 10.',
+        explanation: 'SW2 receives the tagged flood, learns the source MAC against its trunk port in its VLAN 10 table, and floods onward within VLAN 10 — untagged to PC-C, nothing to PC-E in VLAN 20, and never back out the trunk it arrived on. The flood domain is the VLAN, spanning every switch the VLAN is trunked to.'
+      },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el, .diagram-svg .tag-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (frameCaption) frameCaption.textContent = steps[i].caption || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'how-switches-work':       { title: 'How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter', summary: 'Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.' },
+      'ethernet':                { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'spanning-tree-protocol':  { title: 'Spanning Tree Protocol (STP/RSTP) — Loop Prevention & Root Bridge Election', summary: 'Why L2 loops are fatal (no TTL → broadcast storm) and how STP blocks them: root-bridge election, root/designated/blocking ports, path cost, and RSTP’s fast convergence.' },
+      'arp':                     { title: 'ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP', summary: 'The glue between IP and MAC: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous ARP for failover, and why ARP spoofing enables MITM.' },
+      'osi-model':               { title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists', summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

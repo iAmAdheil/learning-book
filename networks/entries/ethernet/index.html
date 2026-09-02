@@ -1,0 +1,553 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ethernet — Frame Format, MAC Addresses &amp; EtherType — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific: the frame diagram is taller than the default 360px cap,
+       and its field annotations reveal only while their field is the active step. */
+    #frame-diagram { max-height: 500px; }
+    #frame-diagram .fnote { opacity: 0; transition: opacity 300ms ease; }
+    #frame-diagram .step-el.active .fnote { opacity: 1; }
+    #frame-diagram .step-el { cursor: pointer; }
+    #frame-diagram .mono { font-family: var(--font-mono, ui-monospace, monospace); }
+    #frame-diagram .tiny { font-size: 10px; }
+    #frame-diagram .bracket { stroke: var(--border); fill: none; stroke-width: 1.2; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Ethernet — Frame Format, MAC Addresses &amp; EtherType</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Put several computers on one shared wire and two questions appear immediately: <em>who is this chunk of data for?</em> and <em>where does it start, where does it end, and did it survive the trip?</em> <strong>Ethernet</strong> — the IEEE 802.3 family — answers both with a 48-bit hardware address and a fixed frame layout, and that answer has survived unchanged from 10 Mbps coaxial cable to 400 Gbps fibre. It is the concrete Layer-2 reality underneath every abstraction about "the link layer", and the source of the one number that keeps reappearing everywhere else in networking: <strong>1500</strong>.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">ethernet</span>
+        <span class="badge tag">mac-address</span>
+        <span class="badge tag">frame</span>
+        <span class="badge tag">ethertype</span>
+        <span class="badge tag">fcs</span>
+        <span class="badge tag">mtu</span>
+        <span class="badge tag">csma-cd</span>
+        <span class="badge tag">broadcast</span>
+        <span class="badge tag">oui</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>MAC address</dt>
+        <dd>A <strong>48-bit (6-byte)</strong> hardware address, normally burned into the network card and written as six hex pairs (<code>a4:5e:60:12:34:56</code>). The first three bytes are the <strong>OUI</strong> — an Organizationally Unique Identifier that IEEE assigns to a manufacturer — and the last three are the vendor's per-device serial. It is <em>flat</em> (no structure a forwarding device can summarise) and <em>link-local</em>: it identifies a card on one physical network, not a host on the internet.</dd>
+
+        <dt>Frame</dt>
+        <dd>The Layer-2 unit of data: a destination MAC, a source MAC, a type field, a payload, and a checksum, delimited on the wire by a fixed preamble. Everything above — IP packets, TCP segments, HTTP requests — travels as the <em>payload</em> of a frame across each individual hop.</dd>
+
+        <dt>EtherType</dt>
+        <dd>A 2-byte field naming <em>which protocol is inside the payload</em>. It is a demultiplexing pointer: without it, the receiver would hold 1500 bytes of anonymous data and no idea which stack to hand them to. <code>0x0800</code> means IPv4, <code>0x0806</code> means ARP, <code>0x86DD</code> means IPv6.</dd>
+
+        <dt>FCS (Frame Check Sequence)</dt>
+        <dd>A 4-byte CRC-32 computed over the frame. The receiver recomputes it and compares. On a mismatch the frame is <strong>silently discarded</strong> — no error message, no retransmission. The FCS <em>detects</em> corruption; it never fixes it.</dd>
+
+        <dt>MTU (Maximum Transmission Unit)</dt>
+        <dd>The largest payload a single frame may carry: <strong>1500 bytes</strong> on standard Ethernet. Together with a <strong>minimum</strong> total frame size of 64 bytes (payload padded to 46 if needed), it sets the size band every higher layer must live inside.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>Here is a complete, real-shaped Ethernet frame as a packet capture would show it — a host at <code>192.168.1.10</code> asking the local network who owns <code>192.168.1.1</code>. Byte offsets are on the left, counted from the start of the frame (the preamble is stripped by the hardware before capture, and the FCS is usually stripped too):</p>
+
+      <pre><code class="lang-text">0000  ff ff ff ff ff ff  a4 5e 60 12 34 56  08 06     ← dest MAC | src MAC | EtherType
+0010  08 00 06 04 00 01  a4 5e 60 12 34 56  c0 a8 01 0a
+0020  00 00 00 00 00 00  c0 a8 01 01  00 00 00 00 00 00
+0030  00 00 00 00 00 00  00 00 00 00 00 00</code></pre>
+
+      <p>Read the first fourteen bytes and the whole frame decodes itself:</p>
+
+      <table class="compare">
+        <thead><tr><th>Offset</th><th>Bytes</th><th>Field</th><th>Meaning</th></tr></thead>
+        <tbody>
+          <tr><td>0–5</td><td><code>ff ff ff ff ff ff</code></td><td>Destination MAC</td><td>All ones — <strong>broadcast</strong>. Every device on the local network must process this frame.</td></tr>
+          <tr><td>6–11</td><td><code>a4 5e 60 12 34 56</code></td><td>Source MAC</td><td>The sender's card. <code>a4:5e:60</code> is the OUI; <code>12:34:56</code> is the vendor's device portion.</td></tr>
+          <tr><td>12–13</td><td><code>08 06</code></td><td>EtherType</td><td><code>0x0806</code> — the payload is ARP, not IP. Hand it to the ARP module.</td></tr>
+          <tr><td>14–41</td><td>28 bytes</td><td>Payload</td><td>The ARP request itself: opcode <code>00 01</code> (request), sender IP <code>c0 a8 01 0a</code> = 192.168.1.10, target IP <code>c0 a8 01 01</code> = 192.168.1.1, target MAC left as zeros because that is the unknown being asked about.</td></tr>
+          <tr><td>42–59</td><td><code>00</code> × 18</td><td>Padding</td><td>The real payload is only 28 bytes. The minimum is 46, so the card pads with zeros — otherwise the frame would be illegally short.</td></tr>
+        </tbody>
+      </table>
+
+      <p>That padding is worth pausing on. Header (14) + payload (28) = 42 bytes, but the minimum legal frame is <strong>64 bytes including the 4-byte FCS</strong>. So the payload is padded to 46, giving 14 + 46 + 4 = 64. Small messages do not get a small frame; they get a padded one.</p>
+
+      <p>Change two bytes and the same envelope carries something completely different. A frame beginning:</p>
+
+      <pre><code class="lang-text">3c 22 fb 01 02 03  a4 5e 60 12 34 56  08 00  45 00 ...
+└──── dest MAC ───┘└──── src MAC ────┘└ 0x0800┘└ IPv4 header begins</code></pre>
+
+      <p>is a <strong>unicast</strong> frame (a specific destination card, not all-ones) carrying an <strong>IPv4</strong> packet (<code>0x0800</code>), whose own header starts with <code>45</code> — version 4, header length 5 words. The Ethernet layer neither knows nor cares what <code>45 00 ...</code> means. It has done its entire job by the fourteenth byte: name a recipient, name a sender, name the protocol inside.</p>
+
+      <p>The ordering of those fields is deliberate. Destination comes <em>first</em> so a switch can read six bytes, look up its forwarding table, and begin sending the frame out the correct port while the rest of it is still arriving — a technique called cut-through switching. Put the destination at the end and that optimisation becomes impossible.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Think of a frame as a parcel on a conveyor belt. The belt first sends a run of alternating pulses so the receiving machine can lock onto the rhythm — that's the preamble, and it isn't part of the parcel at all. Then comes the label: <em>to</em>, <em>from</em>, <em>what's inside</em>. Then the contents. Then a tamper seal that tells you whether anything got scrambled in transit — but not what, and not how to fix it. If the seal is broken, the parcel goes in the bin and nobody is told.</p>
+
+      <p>The diagram below is drawn <strong>to scale in bytes</strong>, so the header really is that small next to the payload it escorts. Step through it — or click any field directly — and each field's size and purpose appears beside the field itself. The last two steps zoom into the destination address to show the two halves of a MAC and the single bit that decides whether a frame is for one device or for many.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg id="frame-diagram" class="diagram-svg" viewBox="0 0 640 400" aria-label="Ethernet frame drawn to scale with byte offsets: preamble and start-frame delimiter, destination MAC, source MAC, EtherType, payload and frame check sequence, plus a zoom into the 48-bit MAC showing the OUI, the device portion, and the individual/group bit">
+
+          <!-- ── brackets above the frame ── -->
+          <path class="bracket" d="M60,54 L60,48 L156,48 L156,54" />
+          <text x="108" y="42" text-anchor="middle" class="label-text tiny">Layer 1 sync — not counted in the frame</text>
+          <path class="bracket" d="M156,54 L156,48 L512,48 L512,54" />
+          <text x="334" y="42" text-anchor="middle" class="label-text tiny">the frame proper — 64 to 1518 bytes</text>
+
+          <!-- ── Preamble + SFD ── -->
+          <g id="f-pre" class="step-el" data-step="0">
+            <title>Preamble and start-frame delimiter</title>
+            <rect class="node-rect" x="60" y="70" width="84" height="46" />
+            <text x="102" y="92" text-anchor="middle" class="node-text">Preamble</text>
+            <text x="102" y="108" text-anchor="middle" class="label-text tiny">7 bytes</text>
+            <rect class="node-rect" x="144" y="70" width="12" height="46" />
+            <text x="150" y="132" text-anchor="middle" class="label-text tiny">SFD 1 B</text>
+            <line class="edge-line fnote" x1="108" y1="150" x2="108" y2="166" />
+            <text x="108" y="182" text-anchor="middle" class="label-text fnote">8 bytes · clock sync, then "frame starts now"</text>
+            <text x="108" y="198" text-anchor="middle" class="label-text fnote tiny">stripped by the hardware — never reaches software</text>
+          </g>
+
+          <!-- ── Destination MAC ── -->
+          <g id="f-dst" class="step-el" data-step="1">
+            <title>Destination MAC address</title>
+            <rect class="node-rect" x="156" y="70" width="72" height="46" />
+            <text x="192" y="92" text-anchor="middle" class="node-text">Dest MAC</text>
+            <text x="192" y="108" text-anchor="middle" class="label-text tiny">6 bytes</text>
+            <text x="156" y="132" text-anchor="middle" class="label-text tiny mono">0</text>
+            <line class="edge-line fnote" x1="192" y1="150" x2="192" y2="166" />
+            <text x="200" y="182" text-anchor="middle" class="label-text fnote">6 bytes · who the frame is for</text>
+            <text x="200" y="198" text-anchor="middle" class="label-text fnote tiny">read first so a switch can forward before the frame finishes arriving</text>
+          </g>
+
+          <!-- ── Source MAC ── -->
+          <g id="f-src" class="step-el" data-step="2">
+            <title>Source MAC address</title>
+            <rect class="node-rect" x="228" y="70" width="72" height="46" />
+            <text x="264" y="92" text-anchor="middle" class="node-text">Src MAC</text>
+            <text x="264" y="108" text-anchor="middle" class="label-text tiny">6 bytes</text>
+            <text x="228" y="132" text-anchor="middle" class="label-text tiny mono">6</text>
+            <line class="edge-line fnote" x1="264" y1="150" x2="264" y2="166" />
+            <text x="272" y="182" text-anchor="middle" class="label-text fnote">6 bytes · who sent it</text>
+            <text x="272" y="198" text-anchor="middle" class="label-text fnote tiny">switches learn port-to-address mappings from this field</text>
+          </g>
+
+          <!-- ── EtherType ── -->
+          <g id="f-type" class="step-el" data-step="3">
+            <title>EtherType</title>
+            <rect class="node-rect" x="300" y="70" width="24" height="46" />
+            <text x="312" y="94" text-anchor="middle" class="label-text tiny">Type</text>
+            <text x="312" y="106" text-anchor="middle" class="label-text tiny">2 B</text>
+            <text x="300" y="132" text-anchor="middle" class="label-text tiny mono">12</text>
+            <line class="edge-line fnote" x1="312" y1="150" x2="312" y2="166" />
+            <text x="320" y="182" text-anchor="middle" class="label-text fnote">2 bytes · which protocol is inside</text>
+            <text x="320" y="198" text-anchor="middle" class="label-text fnote tiny mono">0x0800 IPv4 · 0x0806 ARP · 0x86DD IPv6 · 0x8100 VLAN tag</text>
+          </g>
+
+          <!-- ── Payload ── -->
+          <g id="f-pay" class="step-el" data-step="4">
+            <title>Payload</title>
+            <rect class="node-rect" x="324" y="70" width="140" height="46" />
+            <text x="394" y="92" text-anchor="middle" class="node-text">Payload</text>
+            <text x="394" y="108" text-anchor="middle" class="label-text tiny">46 – 1500 bytes</text>
+            <path class="bracket" d="M392,70 L386,93 L398,93 L392,116" stroke-dasharray="3 3" />
+            <text x="324" y="132" text-anchor="middle" class="label-text tiny mono">14</text>
+            <line class="edge-line fnote" x1="394" y1="150" x2="394" y2="166" />
+            <text x="380" y="182" text-anchor="middle" class="label-text fnote">46–1500 bytes · the encapsulated Layer-3 packet</text>
+            <text x="380" y="198" text-anchor="middle" class="label-text fnote tiny">short payloads are zero-padded to 46; the 1500 ceiling is the Ethernet MTU</text>
+          </g>
+
+          <!-- ── FCS ── -->
+          <g id="f-fcs" class="step-el" data-step="5">
+            <title>Frame check sequence</title>
+            <rect class="node-rect" x="464" y="70" width="48" height="46" />
+            <text x="488" y="94" text-anchor="middle" class="node-text">FCS</text>
+            <text x="488" y="108" text-anchor="middle" class="label-text tiny">4 B</text>
+            <text x="512" y="132" text-anchor="middle" class="label-text tiny mono">end</text>
+            <line class="edge-line fnote" x1="488" y1="150" x2="488" y2="166" />
+            <text x="420" y="182" text-anchor="middle" class="label-text fnote">4 bytes · CRC-32 over the frame</text>
+            <text x="420" y="198" text-anchor="middle" class="label-text fnote tiny">mismatch ⇒ the frame is silently dropped. Detection only, never repair.</text>
+          </g>
+
+          <!-- ── zoom connector + MAC anatomy ── -->
+          <g id="mac-zoom" class="step-el" data-step="6">
+            <title>Anatomy of the 48-bit MAC address</title>
+            <path class="bracket" d="M156,116 L110,224 M228,116 L410,224" stroke-dasharray="4 4" />
+            <text x="60" y="240" class="label-text tiny">zoom: the 48 bits of that destination address</text>
+
+            <rect class="node-rect" x="110" y="248" width="50" height="32" />
+            <text x="135" y="269" text-anchor="middle" class="node-text mono">a4</text>
+            <rect class="node-rect" x="160" y="248" width="50" height="32" />
+            <text x="185" y="269" text-anchor="middle" class="node-text mono">5e</text>
+            <rect class="node-rect" x="210" y="248" width="50" height="32" />
+            <text x="235" y="269" text-anchor="middle" class="node-text mono">60</text>
+            <rect class="node-rect" x="260" y="248" width="50" height="32" />
+            <text x="285" y="269" text-anchor="middle" class="node-text mono">12</text>
+            <rect class="node-rect" x="310" y="248" width="50" height="32" />
+            <text x="335" y="269" text-anchor="middle" class="node-text mono">34</text>
+            <rect class="node-rect" x="360" y="248" width="50" height="32" />
+            <text x="385" y="269" text-anchor="middle" class="node-text mono">56</text>
+
+            <path class="bracket" d="M110,286 L110,292 L260,292 L260,286" />
+            <text x="185" y="306" text-anchor="middle" class="label-text tiny">OUI — 3 bytes, IEEE-assigned to the vendor</text>
+            <path class="bracket" d="M260,286 L260,292 L410,292 L410,286" />
+            <text x="335" y="306" text-anchor="middle" class="label-text tiny">3 bytes assigned per device by that vendor</text>
+            <text x="430" y="269" class="label-text tiny">6 bytes = 48 bits, globally unique in theory</text>
+          </g>
+
+          <!-- ── I/G bit ── -->
+          <g id="bit-strip" class="step-el" data-step="7">
+            <title>The individual/group bit</title>
+            <path class="bracket" d="M110,280 L110,326 M160,280 L318,326" stroke-dasharray="4 4" />
+            <rect class="node-rect" x="110" y="330" width="26" height="26" />
+            <text x="123" y="348" text-anchor="middle" class="node-text mono">1</text>
+            <rect class="node-rect" x="136" y="330" width="26" height="26" />
+            <text x="149" y="348" text-anchor="middle" class="node-text mono">0</text>
+            <rect class="node-rect" x="162" y="330" width="26" height="26" />
+            <text x="175" y="348" text-anchor="middle" class="node-text mono">1</text>
+            <rect class="node-rect" x="188" y="330" width="26" height="26" />
+            <text x="201" y="348" text-anchor="middle" class="node-text mono">0</text>
+            <rect class="node-rect" x="214" y="330" width="26" height="26" />
+            <text x="227" y="348" text-anchor="middle" class="node-text mono">0</text>
+            <rect class="node-rect" x="240" y="330" width="26" height="26" />
+            <text x="253" y="348" text-anchor="middle" class="node-text mono">1</text>
+            <rect class="node-rect" x="266" y="330" width="26" height="26" />
+            <text x="279" y="348" text-anchor="middle" class="node-text mono">0</text>
+            <rect class="node-rect" x="292" y="330" width="26" height="26" />
+            <text x="305" y="348" text-anchor="middle" class="node-text mono">0</text>
+            <text x="60" y="348" class="label-text tiny">byte 0 =</text>
+            <text x="305" y="372" text-anchor="middle" class="label-text tiny">↑ low bit: 0 = unicast, 1 = multicast</text>
+            <text x="330" y="336" class="label-text tiny">a4 → low bit 0 → this address is unicast</text>
+            <text x="330" y="352" class="label-text tiny mono">ff:ff:ff:ff:ff:ff = all 48 bits set = broadcast</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>Three destination kinds fall out of that last bit. A <strong>unicast</strong> address (low bit of the first byte clear) names one card; every other card sees the frame on a shared medium and discards it. A <strong>multicast</strong> address (low bit set) names a group, and only cards that have subscribed to it accept the frame. <strong>Broadcast</strong>, <code>ff:ff:ff:ff:ff:ff</code>, is simply the address with every bit set — the "everyone" group — and is how a device shouts at the entire local network when it has no idea who to talk to.</p>
+
+      <p>The arithmetic of the size limits is worth carrying around: 6 + 6 + 2 + 4 = <strong>18 bytes of framing overhead</strong> on every frame. Maximum frame 1518 bytes = 1500 payload + 18. Minimum frame 64 bytes = 46 payload + 18. That 1500 is the Ethernet MTU, and because Ethernet is very nearly universal at the edge, IP sizes its packets to fit it and TCP's maximum segment size settles at roughly 1500 − 20 (IP header) − 20 (TCP header) = 1460. One hardware-era limit ripples all the way up the stack.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why the minimum is 64 bytes — a fossil of shared cable</h3>
+        <p>Early Ethernet was a single shared coaxial cable, half-duplex: one device could talk at a time, and two that started together <em>collided</em>. The access rule was <strong>CSMA/CD</strong> — Carrier Sense Multiple Access with Collision Detection: listen before transmitting, and if you hear a collision while transmitting, stop, wait a random interval, and retry. Detection only works while you are still sending, so a frame had to stay on the wire long enough for a collision at the far end to travel back before the sender finished. At 10 Mbps over the maximum cable span, that round trip works out to 64 bytes of transmission time. Hence the minimum, and hence the padding.</p>
+        <p>Modern wired Ethernet is switched and full-duplex: each device has its own dedicated link to a switch and can send and receive simultaneously, so there is nothing to collide with and CSMA/CD is effectively dead. The 64-byte minimum survives anyway, because the frame format did not change. Wi-Fi, where the radio medium really is still shared, uses CSMA/<strong>CA</strong> — Collision <em>Avoidance</em>, since a radio cannot listen while transmitting.</p>
+
+        <h3>MACs are link-local, and that is the whole point</h3>
+        <p>A MAC address identifies a card on <em>one</em> physical network. When a packet crosses a router, the router strips the incoming frame, and builds a <em>new</em> frame with a new source MAC (its own outgoing card) and a new destination MAC (the next hop). The IP addresses inside are untouched. So a MAC address never travels more than one hop, while IP addresses travel end to end. MAC is flat, hardware-scoped, and local; IP is hierarchical, logical, and global. That division is why routers can scale — they aggregate hierarchical IP prefixes, which is impossible with flat addresses.</p>
+
+        <h3>Best-effort by design: detection without repair</h3>
+        <p>The FCS is a CRC-32 that catches essentially all realistic corruption — and then the receiving card throws the frame away without telling anyone. No negative acknowledgement, no Layer-2 retransmission. If the lost bytes mattered, TCP will notice the gap in its sequence numbers and retransmit; if they were a video frame over UDP, nothing happens at all and that is the correct outcome. This is the "smart edges, dumb middle" principle: the link layer stays cheap and fast, endpoints own reliability. A useful consequence for debugging — rising FCS error counters on a switch port point at a physical problem (bad cable, duplex mismatch, interference), not a software one.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating a MAC address as a trustworthy device identity — for licensing, access control, or session binding.
+          <pre><code class="lang-bash"># A MAC is a value in a register, not a fingerprint. It is changed in one command:
+sudo ip link set dev eth0 down
+sudo ip link set dev eth0 address 3c:22:fb:aa:bb:cc
+sudo ip link set dev eth0 up</code></pre>
+          <p>Why it breaks: the address is software-settable on essentially every operating system, so an attacker can impersonate a permitted device at will. Worse, the assumption now fails <em>benignly</em> too — modern phones and laptops ship with <strong>MAC randomization</strong> on by default, generating a fresh private address per network for privacy. A system keyed on "MAC = device" will both admit attackers and lock out honest users whose address changed overnight.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> concluding that a valid FCS means the data arrived reliably, and building on Ethernet as if it were a delivered-or-error channel.
+          <pre><code class="lang-text">frame in  →  CRC-32 recomputed  →  mismatch  →  discard, increment counter, say nothing
+                                                 (no NAK, no retry, no notification upward)</code></pre>
+          <p>Why it breaks: the FCS answers exactly one question — "was this frame corrupted?" — and the only action on failure is deletion. It says nothing about frames that were dropped for congestion, never arrived, or arrived out of order. Application-level guarantees come from TCP's sequence numbers, acknowledgements and retransmissions at Layer 4, never from Layer 2.</p>
+        </div>
+
+        <h3>Two demultiplexers that are easy to confuse</h3>
+        <p>EtherType and TCP/UDP port numbers do the same <em>kind</em> of job at different layers, and conflating them is a common misstep. EtherType selects the <strong>Layer-3 protocol</strong> — should these bytes go to the IPv4 stack, the IPv6 stack, or the ARP module? A port number selects the <strong>Layer-4 application endpoint</strong> — should this data go to the web server or the SSH daemon? A frame carrying ARP (<code>0x0806</code>) has no ports at all, because it never reaches Layer 4.</p>
+
+        <h3>Jumbo frames and the cost of the 18-byte tax</h3>
+        <p>Those 18 framing bytes are paid per frame regardless of payload size, so a 64-byte minimum frame spends over a quarter of the wire on envelope. Data centres often raise the MTU to roughly 9000 bytes — <strong>jumbo frames</strong> — so that a bulk transfer pays the overhead six times less often and the receiving CPU handles far fewer interrupts. The catch is that every device along the path must agree; one link still set to 1500 in the middle turns a jumbo-frame deployment into mysterious, size-dependent failures.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation</strong>
+        <span>The general wrapping/unwrapping process that the frame is the outermost layer of — and where EtherType's role as a demultiplexing pointer generalises to every header.</span>
+      </a>
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model</strong>
+        <span>The abstraction Ethernet fills in: it <em>is</em> Layer 2, reaching down into Layer 1, and the frame is the L2 PDU the model names.</span>
+      </a>
+      <a class="related-card" href="../how-switches-work/index.html" data-entry="how-switches-work">
+        <strong>How Switches Work</strong>
+        <span>What a device actually does with these fields — learn from the source MAC, decide by the destination MAC, flood when the destination is unknown or broadcast.</span>
+      </a>
+      <a class="related-card" href="../arp/index.html" data-entry="arp">
+        <strong>ARP — Resolving IP → MAC</strong>
+        <span>The protocol behind EtherType <code>0x0806</code>, and the reason a host ever needs to send a broadcast frame in the first place.</span>
+      </a>
+      <a class="related-card" href="../vlans/index.html" data-entry="vlans">
+        <strong>VLANs &amp; 802.1Q Tagging</strong>
+        <span>What happens when four extra bytes are spliced into this exact frame layout, announced by EtherType <code>0x8100</code>.</span>
+      </a>
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End</strong>
+        <span>Where the link-local MAC hands off to globally routed IP, and why frames are rebuilt at every hop of a packet's journey.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>IEEE 802.3 — Ethernet standard</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A frame arrives with destination MAC <code>ff:ff:ff:ff:ff:ff</code> and EtherType <code>0x0806</code>. What is it, and which devices process it?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">A corrupted frame — an all-ones destination means the address field was scrambled, so the FCS check will drop it.</button>
+            <button class="option" data-correct="true">An ARP request, sent as a broadcast: every device on the local network accepts and inspects it, but only the one owning the target IP replies.</button>
+            <button class="option" data-correct="false">An IPv6 packet addressed to the default gateway, which forwards it onward to the wider internet.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The two fields decode independently: <code>ff:ff:ff:ff:ff:ff</code> is the broadcast address, so every card on the local network processes the frame, and <code>0x0806</code> names ARP as the payload protocol. The sender does not yet know the destination's MAC — that is precisely what it is asking — so broadcast is the only option available.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A frame's recomputed CRC does not match its FCS field. What does the receiving card do next?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Uses the CRC to repair the corrupted bytes, then passes the fixed frame up the stack.</button>
+            <button class="option" data-correct="false">Sends a negative acknowledgement to the source MAC, which retransmits the frame at Layer 2.</button>
+            <button class="option" data-correct="true">Silently discards the frame and increments an error counter. Nothing is retransmitted at Layer 2; if the data mattered, TCP notices the gap and retransmits.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The FCS is error <em>detection</em>, not correction, and Ethernet is best-effort: the only action on a mismatch is deletion, with no notification in either direction. Recovery is a Layer-4 responsibility — TCP's sequence numbers reveal the missing bytes and trigger a retransmission.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does the number 1500 keep reappearing far above the link layer — in IP packet sizes, in TCP's maximum segment size, in fragmentation rules — when it is only an Ethernet limit?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Because 1500 bytes is the Ethernet <strong>MTU</strong>, and Ethernet is close to universal at the network edge, so it becomes the effective ceiling every higher layer designs against. IP sizes its packets to fit inside one frame, since anything larger must be fragmented — expensive, and a source of failures when fragments are dropped. TCP then subtracts its own headers: 1500 − 20 (IPv4 header) − 20 (TCP header) ≈ 1460 bytes of payload, which is the familiar maximum segment size. Raise the link MTU (jumbo frames, ~9000 bytes) and every one of those numbers moves with it — but only if <em>every</em> device on the path agrees, which is why the 1500 default is so sticky. One physical-era limit, chosen for the economics of 1980s hardware, is still shaping how software divides up data today.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at this calibration, kept for consistency) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (Ethernet frame anatomy, to scale) ───
+    const steps = [
+      { activate: ['#f-pre'],
+        explanation: 'Preamble + SFD — 8 bytes. Seven bytes of alternating 1s and 0s let the receiver lock onto the sender’s clock, then the start-frame delimiter says "the frame begins on the next bit". This is pure Layer 1: the hardware strips it, so it never appears in a packet capture and is not counted in the frame’s size.' },
+      { activate: ['#f-dst'],
+        explanation: 'Destination MAC — 6 bytes, offset 0. The first thing on the wire after sync, and deliberately so: a switch can read these six bytes, look up its forwarding table and start sending the frame out the right port while the rest is still arriving (cut-through switching).' },
+      { activate: ['#f-src'],
+        explanation: 'Source MAC — 6 bytes, offset 6. The sender’s card. Switches do not forward on this field, they *learn* from it: seeing a source address arrive on a port teaches the switch that this address lives out that port.' },
+      { activate: ['#f-type'],
+        explanation: 'EtherType — 2 bytes, offset 12. The demultiplexing pointer: 0x0800 IPv4, 0x0806 ARP, 0x86DD IPv6, 0x8100 a VLAN tag. Without it the receiver would have a payload and no idea which protocol stack should parse it.' },
+      { activate: ['#f-pay'],
+        explanation: 'Payload — 46 to 1500 bytes, starting at offset 14 (the box is drawn compressed; at full scale it would be ten times the width of the whole header). Anything shorter than 46 bytes is zero-padded. The 1500-byte ceiling is the Ethernet MTU that IP and TCP size themselves against.' },
+      { activate: ['#f-fcs'],
+        explanation: 'FCS — the last 4 bytes. A CRC-32 over the frame. The receiver recomputes it and compares; on a mismatch the frame is dropped silently, with no notification and no Layer-2 retransmission. Detection, never correction.' },
+      { activate: ['#f-dst', '#mac-zoom'],
+        explanation: 'Zooming into that destination address: 6 bytes = 48 bits, written as six hex pairs. The first three bytes are the OUI, assigned by IEEE to a manufacturer — which is why a MAC can be traced to a vendor. The last three are assigned by that vendor per device, making the pair globally unique in principle.' },
+      { activate: ['#mac-zoom', '#bit-strip'],
+        explanation: 'One bit decides the audience. The low bit of the first byte is the individual/group bit: 0 means unicast (one specific card), 1 means multicast (a subscribed group). Here 0xa4 = 1010 0100 ends in 0, so this is a unicast address. Broadcast is just the extreme case — ff:ff:ff:ff:ff:ff has every bit set, so it is both "group" and "all groups": every device on the local network accepts it.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        currentStep = i;
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(currentStep - 1); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(currentStep + 1); });
+      resetBtn.addEventListener('click', () => applyStep(0));
+
+      // Click any field in the diagram to jump straight to its step.
+      document.querySelectorAll('#frame-diagram .step-el[data-step]').forEach(g => {
+        g.addEventListener('click', () => applyStep(+g.dataset.step));
+      });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+      'osi-model':                   { title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists', summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.' },
+      'how-switches-work':           { title: 'How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter', summary: 'Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.' },
+      'arp':                         { title: 'ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP', summary: 'The glue between IP and MAC: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous ARP for failover, and why ARP spoofing enables MITM.' },
+      'vlans':                       { title: 'VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging', summary: 'Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.' },
+      'how-internet-works':          { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,482 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Buffer Pool / Page Cache — How a DB Manages Memory — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* diag-* SVG vocabulary shim — maps to the same theme-aware CSS vars style.css uses for .node-*/.edge-* */
+    .diagram-svg .diag-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .diag-box, .diagram-svg .diag-box.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diag-box-warn { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .diagram-svg .diag-box-result { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-box-cover { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diagram-label { fill: var(--text); font-family: var(--font); font-size: 13px; }
+    .diagram-svg .diagram-sub { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .diag-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .diagram-svg .step-el.active .diag-edge, .diagram-svg .diag-edge.active { stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-edge-warn { stroke: var(--accent); stroke-dasharray: 4 3; fill: none; }
+    .diagram-svg .diag-warn-text { fill: var(--accent); font-weight: 600; }
+    .diagram-svg .diag-skip-text { fill: var(--text-muted); }
+    .diagram-svg .diag-divider { stroke: var(--border); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Buffer Pool / Page Cache — How a DB Manages Memory</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">The <strong>buffer pool</strong> (<code>shared_buffers</code>) is Postgres's in-RAM cache of <strong>8 KB pages</strong> in shared memory. <em>Every</em> heap or index page a backend reads or writes goes <strong>through</strong> it — never straight to the file. When it fills, a <strong>clock-sweep</strong> algorithm picks a victim to evict; and the moment a <em>dirty</em> victim is written back is exactly where the write-ahead rule is mechanically enforced.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">buffer-pool</span>
+        <span class="badge tag">shared-buffers</span>
+        <span class="badge tag">buffer-manager</span>
+        <span class="badge tag">buffer-tag</span>
+        <span class="badge tag">clock-sweep</span>
+        <span class="badge tag">usage-count</span>
+        <span class="badge tag">pin</span>
+        <span class="badge tag">dirty-page</span>
+        <span class="badge tag">bgwriter</span>
+        <span class="badge tag">ring-buffer</span>
+        <span class="badge tag">double-buffering</span>
+        <span class="badge tag">effective-cache-size</span>
+        <span class="meta-dates">Created 2026-06-30 · Updated 2026-06-30</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Buffer pool / <code>shared_buffers</code></dt>
+        <dd>Postgres's in-RAM cache: an array of fixed <strong>8 KB slots</strong> in shared memory, each holding one page. A slot's index is its <code>buffer_id</code>. <code>shared_buffers</code> is the setting that <em>actually allocates</em> this memory (default 128 MB; ~25% of RAM in production).</dd>
+
+        <dt><code>buffer_tag</code></dt>
+        <dd>A page's global identity: <code>(tablespace, database, relation, fork#, block#)</code>. It turns "block 7 of this table's main fork" into something the manager can look up in O(1).</dd>
+
+        <dt>Buffer table</dt>
+        <dd>A <strong>hash map</strong> <code>buffer_tag → buffer_id</code>. Given a page's identity, it answers "which slot (if any) currently holds it?" in constant time.</dd>
+
+        <dt>Buffer descriptor</dt>
+        <dd>Per-slot <strong>state</strong>: the slot's current <code>buffer_tag</code>, a <strong>dirty</strong> flag (modified since load), <strong>refcount</strong> (the pin count — how many users have it open right now), and <strong>usage_count</strong> (popularity, driving eviction priority; capped at <code>BM_MAX_USAGE_COUNT = 5</code>).</dd>
+
+        <dt>Clock-sweep</dt>
+        <dd>The eviction algorithm — an approximate LRU. A pointer (<code>nextVictimBuffer</code>) walks the descriptors in a circle: skip pinned slots; decrement any <code>usage_count &gt; 0</code> and move on (a second chance); evict the first unpinned slot at <code>usage_count == 0</code>.</dd>
+
+        <dt>Pin (refcount)</dt>
+        <dd>A pin (<code>refcount &gt; 0</code>) marks a buffer as in-use and <strong>forbids its eviction</strong>. A backend pins on read (<code>refcount++</code>) and unpins when done (<code>refcount--</code>). Unlike a pin, <code>usage_count</code> persists after unpinning as a popularity residue.</dd>
+
+        <dt>Ring buffer (Buffer Access Strategy)</dt>
+        <dd>A small set of buffers <em>within</em> <code>shared_buffers</code> (256 KB–16 MB) reused cyclically for large sequential scans and bulk ops (<code>COPY</code>, <code>CREATE TABLE AS</code>, <code>VACUUM</code>), so a giant scan churns its own few slots and <strong>can't evict the hot working set</strong>.</dd>
+
+        <dt>Double buffering</dt>
+        <dd>The fact that Postgres pages live in <strong>two</strong> caches at once — <code>shared_buffers</code> <em>and</em> the OS page cache. Deliberate: Postgres leans on the kernel's file cache rather than using <code>O_DIRECT</code>, which is why the pool is kept modest so RAM is left for the OS.</dd>
+
+        <dt><code>effective_cache_size</code></dt>
+        <dd>A <strong>planner hint</strong> that allocates <em>nothing</em>. It estimates total cache available (≈ <code>shared_buffers</code> + OS cache) and biases the cost model toward index scans. It changes plans, not memory — not to be confused with <code>shared_buffers</code>.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Inspect the pool and what it currently holds:</p>
+      <pre><code class="lang-sql">SHOW shared_buffers;                       -- pool size (default 128MB; ~25% RAM in prod)
+CREATE EXTENSION pg_buffercache;           -- inspect what's cached now
+SELECT count(*) FROM pg_buffercache WHERE isdirty;   -- dirty pages awaiting flush</code></pre>
+
+      <p>Now trace what happens when a backend asks for <strong>block 7 of a table</strong>. The request passes through the three buffer-manager structures in order — this is the lookup that runs on <em>every</em> page access:</p>
+      <pre><code class="lang-text">1. buffer_tag  = (tablespace, database, relation, main-fork, block 7)
+                 ↓  the page's global identity
+
+2. buffer table  →  hash lookup: buffer_tag → buffer_id?
+       HIT             → pin (refcount++), bump usage_count (cap 5), done
+       MISS, free slot → take from free list, load from disk,
+                         insert (tag → id) into buffer table, pin
+       MISS, pool full → clock-sweep a victim (flush WAL if dirty),
+                         load block 7 into it, insert into table, pin
+                 ↓  answers "which slot?" in O(1)
+
+3. buffer descriptor  →  the slot's state: buffer_tag, dirty flag,
+                         refcount (pins), usage_count (popularity)</code></pre>
+      <p>The <code>buffer_tag</code> is the key that makes this work: it converts a page's abstract identity into an O(1) hash-table probe, and a hit costs nothing but a lookup and a counter bump. A miss loads from disk into a free or freshly-evicted slot; if that evicted victim was dirty, its data page can only reach disk <em>after</em> its WAL is flushed — the write-ahead rule, enforced here.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a librarian's desk with a fixed number of reading stands (the slots). Each stand has a sticky note recording who is reading it now (the <strong>pin</strong> / refcount), how popular it is (<strong>usage_count</strong>), and whether anyone has written in it (<strong>dirty</strong>). When every stand is full and a new book is requested, the librarian walks a circle with a pointer — the clock hand (<code>nextVictimBuffer</code>): she skips any book still being read, knocks each popular book's popularity down by one and moves on (a second chance), and evicts the first unpopular one she reaches. If that book was written in, she first copies the changes to the master journal (flush WAL) before reshelving it.</p>
+      <p>Step through one full clock-sweep below. Six buffer slots sit in a ring, each labelled with its <code>usage_count</code> and whether it is pinned. Watch the hand rotate and the counters decay.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 440" aria-label="Clock-sweep eviction: a rotating hand walks a ring of six buffer slots, skipping pinned ones, decrementing usage counts, and evicting the first unpinned slot at usage_count zero">
+          <defs>
+            <marker id="hand-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- Center hub: nextVictimBuffer -->
+          <circle cx="320" cy="210" r="34" class="diag-box" />
+          <text x="320" y="205" text-anchor="middle" class="diagram-sub">clock</text>
+          <text x="320" y="221" text-anchor="middle" class="diagram-sub">hand</text>
+
+          <!-- ── Hands (one per position, activated per step) ── -->
+          <line id="hand-0" class="step-el diag-edge" x1="320" y1="180" x2="320" y2="112" marker-end="url(#hand-arrow)" />
+          <line id="hand-1" class="step-el diag-edge" x1="348" y1="194" x2="404" y2="162" marker-end="url(#hand-arrow)" />
+          <line id="hand-2" class="step-el diag-edge" x1="348" y1="226" x2="404" y2="258" marker-end="url(#hand-arrow)" />
+          <line id="hand-3" class="step-el diag-edge diag-edge-warn" x1="320" y1="240" x2="320" y2="308" marker-end="url(#hand-arrow)" />
+
+          <!-- ── Slot 0 (top): pinned, usage=3 → skip ── -->
+          <g>
+            <rect x="275" y="40" width="90" height="62" rx="8" class="diag-box" />
+            <text x="320" y="60" text-anchor="middle" class="diagram-label">buf 0</text>
+            <text x="320" y="78" text-anchor="middle" class="diagram-sub">usage=3</text>
+            <text x="320" y="94" text-anchor="middle" class="diagram-sub diag-warn-text">pinned</text>
+          </g>
+          <g id="badge-0" class="step-el">
+            <rect x="373" y="52" width="66" height="24" rx="12" class="diag-box" />
+            <text x="406" y="68" text-anchor="middle" class="diagram-sub">skip →</text>
+          </g>
+
+          <!-- ── Slot 1 (upper-right): unpinned, usage=2 → decrement to 1 ── -->
+          <g>
+            <rect x="396" y="110" width="90" height="62" rx="8" class="diag-box" />
+            <text x="441" y="130" text-anchor="middle" class="diagram-label">buf 1</text>
+            <text x="441" y="148" text-anchor="middle" class="diagram-sub">usage=2</text>
+            <text x="441" y="164" text-anchor="middle" class="diagram-sub">unpinned</text>
+          </g>
+          <g id="badge-1" class="step-el">
+            <rect x="491" y="129" width="70" height="24" rx="12" class="diag-box" />
+            <text x="526" y="145" text-anchor="middle" class="diagram-sub">2 → 1</text>
+          </g>
+
+          <!-- ── Slot 2 (lower-right): unpinned, usage=1 → decrement to 0 ── -->
+          <g>
+            <rect x="396" y="250" width="90" height="62" rx="8" class="diag-box" />
+            <text x="441" y="270" text-anchor="middle" class="diagram-label">buf 2</text>
+            <text x="441" y="288" text-anchor="middle" class="diagram-sub">usage=1</text>
+            <text x="441" y="304" text-anchor="middle" class="diagram-sub">unpinned</text>
+          </g>
+          <g id="badge-2" class="step-el">
+            <rect x="491" y="269" width="70" height="24" rx="12" class="diag-box" />
+            <text x="526" y="285" text-anchor="middle" class="diagram-sub">1 → 0</text>
+          </g>
+
+          <!-- ── Slot 3 (bottom): unpinned, usage=0, DIRTY → victim ── -->
+          <g>
+            <rect x="275" y="318" width="90" height="62" rx="8" class="diag-box diag-box-warn" />
+            <text x="320" y="338" text-anchor="middle" class="diagram-label">buf 3</text>
+            <text x="320" y="356" text-anchor="middle" class="diagram-sub">usage=0</text>
+            <text x="320" y="372" text-anchor="middle" class="diagram-sub diag-warn-text">dirty · unpinned</text>
+          </g>
+          <g id="badge-3" class="step-el">
+            <rect x="152" y="336" width="118" height="26" rx="13" class="diag-box diag-box-result" />
+            <text x="211" y="353" text-anchor="middle" class="diagram-sub">VICTIM</text>
+          </g>
+          <g id="badge-wal" class="step-el">
+            <rect x="373" y="336" width="150" height="26" rx="13" class="diag-box diag-box-warn" />
+            <text x="448" y="353" text-anchor="middle" class="diagram-sub diag-warn-text">flush WAL → pd_lsn</text>
+          </g>
+
+          <!-- ── Slot 4 (lower-left): unpinned, usage=5 (decoration) ── -->
+          <g>
+            <rect x="154" y="250" width="90" height="62" rx="8" class="diag-box" />
+            <text x="199" y="270" text-anchor="middle" class="diagram-label">buf 4</text>
+            <text x="199" y="288" text-anchor="middle" class="diagram-sub">usage=5</text>
+            <text x="199" y="304" text-anchor="middle" class="diagram-sub">unpinned</text>
+          </g>
+
+          <!-- ── Slot 5 (upper-left): pinned, usage=1 (decoration) ── -->
+          <g>
+            <rect x="154" y="110" width="90" height="62" rx="8" class="diag-box" />
+            <text x="199" y="130" text-anchor="middle" class="diagram-label">buf 5</text>
+            <text x="199" y="148" text-anchor="middle" class="diagram-sub">usage=1</text>
+            <text x="199" y="164" text-anchor="middle" class="diagram-sub diag-warn-text">pinned</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why clock-sweep instead of true LRU?</h3>
+        <p>True LRU keeps an <strong>exact access-ordered list</strong> and evicts the single oldest page. But maintaining that order requires <strong>moving a page to the front of the list on every access</strong> — and because the pool is shared by all backends, that shared list needs a <strong>lock on every read</strong>, which becomes a contention bottleneck. Clock-sweep drops the exact ordering: on access you only <strong>bump a per-page counter</strong> (no list, no global lock), and eviction approximates LRU via second chances. The trade is <em>locked global ordering per access</em> (LRU) versus a <em>cheap per-page counter plus a rotating hand</em> (clock-sweep). The small cap (5) guarantees even a hot page is <em>eventually</em> evictable rather than pinned in cache forever.</p>
+
+        <h3>The WAL connection — the enforcement point</h3>
+        <p>Before a <strong>dirty</strong> victim is written to its data file, the buffer manager must <strong>flush WAL up to that page's <code>pd_lsn</code></strong> (<code>XLogFlush</code>). This is the write-ahead rule enforced mechanically: a data page can never reach disk before the WAL records describing it. Three actors flush dirty buffers — the <strong>checkpointer</strong> (flushes all dirty buffers at a checkpoint so old WAL can recycle), the <strong>background writer</strong> (trickles out soon-to-be-evicted dirty buffers so victims are usually already clean), and a <strong>regular backend</strong> that picks an un-cleaned dirty victim and must write it itself, synchronously, mid-query — a latency spike. Avoiding that spike is precisely why the bgwriter exists.</p>
+
+        <h3>Cache pollution &amp; ring buffers</h3>
+        <p>A naive cache has a flaw: one <code>SELECT * FROM huge_table</code> would stream millions of never-reread pages through the pool and evict the entire hot working set. Postgres prevents this with a <strong>Buffer Access Strategy (ring buffer)</strong>: large sequential scans (relation &gt; 25% of <code>shared_buffers</code>) and bulk ops (<code>COPY</code>, <code>CREATE TABLE AS</code>, <code>VACUUM</code>) are confined to a small set of buffers <em>within</em> the pool, reused cyclically. So a giant analytical scan or a VACUUM churns its own few slots and cannot blow away the cache — which is why a big scan does not tank OLTP latency.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> setting <code>shared_buffers</code> to 80% of RAM "to cache more pages."
+          <pre><code class="lang-sql">-- Tempting but wrong on a 64 GB box:
+shared_buffers = 52GB        -- "80% of RAM, cache everything!"
+
+-- Sensible default:
+shared_buffers = 16GB        -- ~25% of RAM; leave the rest for the OS cache</code></pre>
+          <p>Why it backfires: Postgres pages live in <strong>two</strong> caches at once — <code>shared_buffers</code> <em>and</em> the OS page cache. (1) <strong>Double-buffering waste</strong>: oversizing the pool means hot pages are cached twice, so fewer <em>distinct</em> pages are cached overall. (2) <strong>Heavier checkpoints</strong>: a larger pool holds more dirty pages, so each checkpoint has more to flush, plus memory pressure on <code>work_mem</code> and the OS. Because Postgres deliberately shares caching with the kernel (unlike <code>O_DIRECT</code> engines such as Oracle/InnoDB), keep the pool near ~25% and leave RAM for the OS.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> conflating <code>effective_cache_size</code> with <code>shared_buffers</code> and raising it to reserve memory.
+          <p>Why it is a misconception: <code>effective_cache_size</code> <strong>allocates nothing</strong>. It is a <em>planner hint</em> (≈ <code>shared_buffers</code> + estimated OS cache) that nudges the cost model toward index scans over sequential scans. Changing it changes <em>plans</em>, not cache. Only <code>shared_buffers</code> allocates real memory. (Distinct again: <code>work_mem</code> sizes each sort/hash op; <code>maintenance_work_mem</code> sizes VACUUM and CREATE INDEX.)</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>The 8 KB pages that live in the buffer pool while hot — this is what each slot actually holds.</span>
+      </a>
+      <a class="related-card" href="../write-ahead-log/index.html" data-entry="write-ahead-log">
+        <strong>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</strong>
+        <span>The write-ahead rule that fires exactly when a dirty victim is evicted: flush WAL to pd_lsn before the data page reaches disk.</span>
+      </a>
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC — How Postgres Implements Multi-Version Concurrency Control</strong>
+        <span>Where the dirtying comes from: hint bits and version writes mark buffered pages dirty, feeding them into eviction and flushing.</span>
+      </a>
+      <a class="related-card" href="../table-bloat-and-autovacuum/index.html" data-entry="table-bloat-and-autovacuum">
+        <strong>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</strong>
+        <span>VACUUM uses a ring buffer so its bulk scan cannot evict the hot working set from the pool.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Index pages are cached in the same buffer pool; a covering index that stays in cache is what makes an index-only scan fast.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.interdb.jp/pg/pgsql08/01.html" target="_blank" rel="noopener">The Internals of PostgreSQL §8.1 — Buffer Manager Structure</a> — fetched 2026-06-30</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql08/04.html" target="_blank" rel="noopener">The Internals of PostgreSQL §8.4 — Buffer Manager Working (Clock-Sweep)</a> — fetched 2026-06-30</li>
+          <li><a href="https://www.postgresql.org/docs/current/runtime-config-resource.html" target="_blank" rel="noopener">PostgreSQL Documentation — Resource Consumption (Memory)</a> — fetched 2026-06-30</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A backend wants block 7 of a table and it is <em>not</em> currently cached, and the pool is full. Which sequence correctly describes the miss path?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Read block 7 directly from the file into the backend's private memory, bypassing the pool since it is full.</button>
+            <button class="option" data-correct="true">Clock-sweep a victim slot (flush its WAL first if it is dirty), load block 7 into that slot, insert <code>buffer_tag → buffer_id</code> into the buffer table, then pin it.</button>
+            <button class="option" data-correct="false">Evict the least-recently-used slot by scanning an exact access-ordered list under a global lock, then load block 7.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Every page goes through the pool. On a full-pool miss, clock-sweep selects a victim (flushing WAL if it is dirty), loads the page in, records the tag→id mapping in the buffer table, and pins it. Postgres never keeps an exact LRU list — that is the very cost clock-sweep avoids.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A colleague sets <code>shared_buffers</code> to 80% of RAM "to cache more," and throughput drops. What is the primary reason?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false"><code>shared_buffers</code> above 40% is a hard cap and Postgres refuses to start, so it silently fell back to 128 MB.</button>
+            <button class="option" data-correct="true">Double-buffering waste: pages are cached in both <code>shared_buffers</code> and the OS page cache, so oversizing the pool caches duplicates and fewer <em>distinct</em> pages, plus checkpoints get heavier.</button>
+            <button class="option" data-correct="false"><code>effective_cache_size</code> automatically shrinks to match, starving the planner of index-scan estimates.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Postgres deliberately shares caching with the OS page cache, so an oversized pool double-caches hot pages (fewer distinct pages overall) and forces heavier checkpoints. That is why the rule of thumb is ~25% of RAM, rarely above 40%.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Explain clock-sweep: its three per-slot actions, why a hot page survives, and why Postgres uses it instead of true LRU.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The hand (<code>nextVictimBuffer</code>) walks the descriptors in a circle. At each slot: (1) if <strong>pinned</strong> (<code>refcount &gt; 0</code>), skip it; (2) if <strong><code>usage_count &gt; 0</code></strong>, decrement it and move on — a second chance; (3) if <strong><code>usage_count == 0</code> and unpinned</strong>, evict it (flushing WAL to <code>pd_lsn</code> first if dirty). A hot page survives because each access bumps its <code>usage_count</code> (capped at 5), so it takes several sweeps to decay to 0 — popular pages outlive touched-once ones. Postgres avoids true LRU because an exact access-ordered list would require a <strong>locked move-to-front on every read</strong>, and since the pool is shared by all backends that lock becomes a contention bottleneck. Clock-sweep replaces the ordered list with a cheap per-page counter and a rotating second-chance hand — approximate LRU with no global lock.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (ALGORITHM TRACE: clock-sweep eviction) ─
+    const steps = [
+      { activate: ['#hand-0', '#badge-0'],
+        explanation: 'Step 1 — the hand (nextVictimBuffer) points at buf 0. It is pinned (refcount > 0): a backend is using it right now, so it cannot be evicted. Skip it and advance.' },
+      { activate: ['#hand-1', '#badge-1'],
+        explanation: 'Step 2 — buf 1 is unpinned with usage_count = 2. Not evictable yet: decrement it to 1 (a second chance) and move on. This is how popular pages survive a sweep.' },
+      { activate: ['#hand-2', '#badge-2'],
+        explanation: 'Step 3 — buf 2 is unpinned with usage_count = 1. Still above zero: decrement it to 0 and advance. One more sweep and it too would become evictable.' },
+      { activate: ['#hand-3', '#badge-3', '#badge-wal'],
+        explanation: 'Step 4 — buf 3 is unpinned with usage_count = 0: the victim. But it is dirty, so first flush WAL up to the page’s pd_lsn (the write-ahead rule), then evict it and load the new page into this slot.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'heap-storage-layout':        { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.' },
+      'write-ahead-log':            { title: 'Write-Ahead Log (WAL) — Crash Recovery & the Durability Guarantee', summary: 'Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints & redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.' },
+      'mvcc':                       { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'table-bloat-and-autovacuum': { title: 'Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind', summary: 'Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM’s two bits, freezing & XID wraparound, and autovacuum triggers/tuning.' },
+      'covering-indexes':           { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Partial &amp; Expression Indexes — Databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Self-contained visual styles — scoped to this entry's diagram */
+    .index-compare { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.25rem; margin: 1.5rem 0; }
+    .idx-card { border: 1px solid var(--border, #d0d4da); border-radius: 10px; padding: 1rem; background: var(--card-bg, rgba(127,127,127,0.04)); }
+    .idx-card h4 { margin: 0 0 .15rem; font-size: 1rem; }
+    .idx-card .idx-sub { font-size: .78rem; opacity: .7; margin: 0 0 .75rem; }
+    .idx-rows { display: flex; flex-direction: column; gap: 4px; }
+    .idx-row { display: flex; align-items: center; gap: 8px; font: 12px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; padding: 4px 7px; border-radius: 5px; background: rgba(127,127,127,0.10); }
+    .idx-row.indexed { background: rgba(56,142,60,0.18); border-left: 3px solid #43a047; }
+    .idx-row.excluded { opacity: .4; text-decoration: line-through; }
+    .idx-row .tag { margin-left: auto; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: rgba(127,127,127,0.18); }
+    .idx-row.transformed .tag { background: rgba(25,118,210,0.22); }
+    .idx-foot { margin-top: .8rem; font-size: .8rem; opacity: .85; }
+    .idx-foot strong { color: var(--accent, #1976d2); }
+    .legend { display: flex; flex-wrap: wrap; gap: 1rem; font-size: .78rem; margin-top: .5rem; opacity: .85; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .swatch { width: 13px; height: 13px; border-radius: 3px; display: inline-block; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← Databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Partial &amp; Expression Indexes</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">When an index covers rows you never query or stores raw values you never search by, it wastes space and write effort. A <strong>partial index</strong> indexes only the rows matching a <code>WHERE</code> predicate; an <strong>expression index</strong> indexes the result of a function instead of the raw column. Both make the index smaller, more specialized, and capable of enforcing constraints a plain index cannot.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">partial-index</span>
+        <span class="badge tag">expression-index</span>
+        <span class="badge tag">unique-constraint</span>
+        <span class="badge tag">soft-delete</span>
+        <span class="meta-dates">Created 2026-06-06 · Updated 2026-06-06</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>Partial index</dt>
+        <dd>An index built only over rows satisfying a <code>WHERE</code> predicate — a <em>horizontal slice</em> of the table. Smaller index, fewer entries to scan, and a lower write tax because writes to excluded rows never touch it.</dd>
+
+        <dt>Expression (functional) index</dt>
+        <dd>An index over <code>f(column)</code> rather than the raw column — a <em>vertical transform</em> of the data. The function is computed once at write time and stored, so reads matching that exact expression become a plain indexed lookup.</dd>
+
+        <dt>Predicate provability</dt>
+        <dd>The planner uses a partial index only if it can <em>prove at planning time</em> that the query's <code>WHERE</code> guarantees the index's predicate. Bound parameters (<code>$1</code>) are unknown then, so they defeat the proof.</dd>
+
+        <dt>Write tax</dt>
+        <dd>The per-write cost an index imposes. Partial indexes <em>lower</em> it (fewer rows participate); expression indexes <em>raise</em> it (the function is recomputed on every insert and non-HOT update).</dd>
+
+        <dt>Scoped uniqueness</dt>
+        <dd>A <code>UNIQUE</code> index whose predicate or expression narrows what "unique" means — e.g. one primary card per user, or case-insensitive-unique email only among active rows. Plain <code>UNIQUE</code> cannot express either.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The two ideas are orthogonal — one slices rows, the other transforms keys — and they compose cleanly.</p>
+      <pre><code class="lang-sql">-- PARTIAL: index only the rows you actually query (active users)
+CREATE INDEX idx_active_users
+  ON users (email)
+  WHERE deleted_at IS NULL;
+
+-- EXPRESSION: index the transformed value for case-insensitive search
+CREATE INDEX idx_lower_email
+  ON users (lower(email));
+
+SELECT * FROM users WHERE lower(email) = 'a@b.com';   -- uses idx_lower_email</code></pre>
+
+      <p>The most powerful use is enforcing a constraint a plain <code>UNIQUE</code> simply cannot. "At most one primary email per user, unlimited non-primary ones" needs uniqueness scoped to the predicate subset:</p>
+      <pre><code class="lang-sql">-- One primary email per user; any number of non-primary emails allowed
+CREATE UNIQUE INDEX one_primary
+  ON emails (user_id)
+  WHERE is_primary;</code></pre>
+      <p>A plain <code>UNIQUE (user_id)</code> would forbid a user from having more than one email <em>at all</em>. The partial predicate scopes the uniqueness to only the rows where <code>is_primary</code> is true — every other row is invisible to the constraint. Note the unique column is <code>user_id</code> (the thing that must be unique within the subset), not the email.</p>
+
+      <p>Combining both is the production power move — encoding a real business rule in one declarative line:</p>
+      <pre><code class="lang-sql">CREATE UNIQUE INDEX uniq_active_email
+  ON users (lower(email))      -- expression: case-insensitive
+  WHERE deleted_at IS NULL;    -- partial: only active users</code></pre>
+      <p>"Case-insensitive-unique email, but only among non-deleted users." A soft-deleted user automatically frees their email for reuse — no application logic, no race condition. This is the textbook answer to "enforce unique active emails with soft deletes."</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of a normal index as the full guest list with everyone's name written exactly as given. A <strong>partial index</strong> is the VIP-only list — much shorter and faster to scan, but useless for anyone who isn't a VIP, so your query has to be about VIPs. An <strong>expression index</strong> is the list sorted by <em>nickname</em> — perfect if you always look people up by nickname, but useless if you search by legal name. A VIP list sorted by nickname is both ideas at once.</p>
+
+      <p>Below, the same <code>users</code> table feeds three indexes. Watch which rows survive and what the stored key looks like.</p>
+
+      <div class="visual-container">
+        <div class="index-compare">
+          <!-- Full index -->
+          <div class="idx-card">
+            <h4>Full index</h4>
+            <p class="idx-sub">ON users (email) — every row, raw value</p>
+            <div class="idx-rows">
+              <div class="idx-row indexed">Ann@x.com <span class="tag">active</span></div>
+              <div class="idx-row indexed">BOB@x.com <span class="tag">active</span></div>
+              <div class="idx-row indexed">cara@x.com <span class="tag">deleted</span></div>
+              <div class="idx-row indexed">dan@x.com <span class="tag">deleted</span></div>
+              <div class="idx-row indexed">EVE@x.com <span class="tag">deleted</span></div>
+            </div>
+            <p class="idx-foot"><strong>5</strong> entries · full write tax · case-sensitive keys</p>
+          </div>
+
+          <!-- Partial index -->
+          <div class="idx-card">
+            <h4>Partial index</h4>
+            <p class="idx-sub">… WHERE deleted_at IS NULL — horizontal slice</p>
+            <div class="idx-rows">
+              <div class="idx-row indexed">Ann@x.com <span class="tag">active</span></div>
+              <div class="idx-row indexed">BOB@x.com <span class="tag">active</span></div>
+              <div class="idx-row excluded">cara@x.com <span class="tag">deleted</span></div>
+              <div class="idx-row excluded">dan@x.com <span class="tag">deleted</span></div>
+              <div class="idx-row excluded">EVE@x.com <span class="tag">deleted</span></div>
+            </div>
+            <p class="idx-foot"><strong>2</strong> entries · lower write tax · deleted rows skip it</p>
+          </div>
+
+          <!-- Expression index -->
+          <div class="idx-card">
+            <h4>Expression index</h4>
+            <p class="idx-sub">ON users (lower(email)) — vertical transform</p>
+            <div class="idx-rows">
+              <div class="idx-row indexed transformed">ann@x.com <span class="tag">lower()</span></div>
+              <div class="idx-row indexed transformed">bob@x.com <span class="tag">lower()</span></div>
+              <div class="idx-row indexed transformed">cara@x.com <span class="tag">lower()</span></div>
+              <div class="idx-row indexed transformed">dan@x.com <span class="tag">lower()</span></div>
+              <div class="idx-row indexed transformed">eve@x.com <span class="tag">lower()</span></div>
+            </div>
+            <p class="idx-foot"><strong>5</strong> entries · higher write tax · stored lowercased</p>
+          </div>
+        </div>
+
+        <div class="legend">
+          <span><span class="swatch" style="background:rgba(56,142,60,0.45)"></span> stored in index</span>
+          <span><span class="swatch" style="background:rgba(127,127,127,0.25)"></span> excluded (not indexed)</span>
+          <span><span class="swatch" style="background:rgba(25,118,210,0.45)"></span> transformed key</span>
+        </div>
+
+        <p class="step-explanation">Partial shrinks the index <em>vertically</em> in row count (and lowers write cost); expression rewrites each key <em>in place</em> via a function (and raises write cost because the function recomputes on every write). They change different dimensions, which is exactly why they combine into a single <code>UNIQUE … (lower(email)) WHERE deleted_at IS NULL</code> index.</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p>The critical rule for partial indexes: the planner uses one <strong>only if it can prove at planning time</strong> that the query's <code>WHERE</code> guarantees the index predicate. Simple inequality implication works (<code>x &lt; 1</code> implies <code>x &lt; 2</code>); subtle implications do not.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> Expecting a partial index to be used through a bound parameter.
+          <pre><code class="lang-sql">-- Index:  ON orders (created_at) WHERE status = 'pending'
+
+WHERE status = 'pending' AND created_at &gt; '2026-01-01'   -- ✅ literal proves predicate
+WHERE created_at &gt; '2026-01-01'                          -- ❌ no status filter at all
+WHERE status = $1                                        -- ❌ $1 unknown at plan time</code></pre>
+          <p>With ORMs and prepared statements, the query becomes <code>WHERE status = $1</code>. Even when the app passes <code>'pending'</code>, the planner sees only <code>$1</code> — it cannot prove the parameter equals the literal in the predicate, so it skips the partial index and falls back to a sequential scan. This is the single most common cause of "why isn't my partial index being used?"</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> A query expression that doesn't textually match the index expression.
+          <pre><code class="lang-sql">-- Index:  ON users (lower(email))
+
+WHERE lower(email) = 'a@b.com'   -- ✅ exact match → indexed lookup
+WHERE email = 'a@b.com'          -- ❌ raw column ≠ lower(email)
+WHERE upper(email) = 'A@B.COM'   -- ❌ different function</code></pre>
+          <p>The planner treats <code>lower(email)</code> as if it were an ordinary indexed column, so the query must use the <em>exact same expression</em>. <code>lower(email)</code> ≠ <code>email</code> ≠ <code>upper(email)</code>.</p>
+        </div>
+
+        <ul>
+          <li><strong>Don't fake partitioning</strong> with dozens of partial indexes (one per category). The planner tests each candidate, so this scales badly — use real declarative table partitioning instead.</li>
+          <li><strong>Excluding common values</strong> is a legitimate partial-index use: the planner won't pick an index for a value that matches a large fraction of rows anyway, so don't index it — <code>CREATE INDEX ON orders (order_nr) WHERE billed IS NOT TRUE;</code>.</li>
+          <li><strong>Multi-column expressions</strong> need double parentheses: <code>CREATE INDEX ON people ((first_name || ' ' || last_name));</code>.</li>
+          <li><strong>Write-tax direction is opposite:</strong> every index updates when the indexed column changes; the expression-specific extra is recomputing the function on each insert and non-HOT update. Partial lowers cost because writes to rows outside the predicate skip the index entirely.</li>
+        </ul>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</strong>
+        <span>The substrate both variants build on — and why a raw <code>f(column)</code> defeats an ordinary B-tree, motivating expression indexes.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Another way to specialize an index for a query; partial and covering tactics often stack on the same index.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>Multi-column indexing; partial predicates and expressions can be layered onto composite keys.</span>
+      </a>
+      <a class="related-card" href="../clustered-vs-nonclustered-indexes/index.html" data-entry="clustered-vs-nonclustered-indexes">
+        <strong>Clustered vs Non-clustered Indexes</strong>
+        <span>How index leaves relate to heap rows — context for the write-tax and storage trade-offs discussed here.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/indexes-partial.html" target="_blank" rel="noopener">PostgreSQL Documentation — Partial Indexes</a> — fetched 2026-06-06</li>
+          <li><a href="https://www.postgresql.org/docs/current/indexes-expressional.html" target="_blank" rel="noopener">PostgreSQL Documentation — Indexes on Expressions</a> — fetched 2026-06-06</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">An index is defined as <code>(status) WHERE status = 'pending'</code>. An ORM emits <code>WHERE status = $1</code> with <code>$1 = 'pending'</code>. Will the planner use the partial index?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Yes — the value passed is <code>'pending'</code>, which matches the predicate.</button>
+            <button class="option" data-correct="true">No — <code>$1</code> is unknown at planning time, so the planner can't prove the predicate holds.</button>
+            <button class="option" data-correct="false">Yes — but only after the query runs once and caches the parameter.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A partial index is used only when the planner can prove the predicate at plan time; a bound parameter is opaque then, so it falls back to a sequential scan.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does an expression index <em>raise</em> write cost while a partial index <em>lowers</em> it?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Expression indexes store more bytes per row; partial indexes compress their entries.</button>
+            <button class="option" data-correct="true">Expression indexes recompute the function on every write; partial indexes skip writes to rows outside the predicate.</button>
+            <button class="option" data-correct="false">Expression indexes lock the whole table on write; partial indexes lock only one page.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Every index updates when its column changes; the expression-specific extra is recomputing <code>f(column)</code> per insert/non-HOT update, whereas a partial index simply ignores excluded rows.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In one line each: which dimension does a partial index shrink, and which does an expression index change?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Partial shrinks <strong>rows</strong> — a horizontal slice keeping only those matching the predicate (lowering read and write tax). Expression changes the <strong>key</strong> — a vertical transform storing <code>f(column)</code> instead of the raw value (raising write tax for faster matching reads).</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Write one index that enforces "at most one primary email per user, unlimited non-primary." Why can't a plain <code>UNIQUE</code> do it?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p><code>CREATE UNIQUE INDEX one_primary ON emails (user_id) WHERE is_primary;</code> — the unique column is <code>user_id</code> (the thing unique within the subset), scoped by the predicate to only primary rows. A plain <code>UNIQUE (user_id)</code> forbids a user from having more than one email at all; the partial predicate restricts uniqueness to just the <code>is_primary</code> rows.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Write one index enforcing case-insensitive unique emails only among non-deleted users, and name the business rule it encodes.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p><code>CREATE UNIQUE INDEX ON users (lower(email)) WHERE deleted_at IS NULL;</code> — expression (<code>lower</code>) gives case-insensitivity, partial (<code>WHERE deleted_at IS NULL</code>) restricts it to active users. Rule: a soft-deleted user automatically frees their email for reuse, with no app logic and no race window.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards) ───────────────────────────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    document.querySelectorAll('td[data-score]').forEach(cell => {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (unused for this static comparison visual) ──
+    const steps = [];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'btree-indexes':                  { title: 'B-tree Indexes', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, ORDER BY for free, and why f(column) defeats the index.' },
+      'covering-indexes':               { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why the visibility map / MVCC can still force heap access.' },
+      'composite-indexes':              { title: 'Composite Indexes', summary: 'The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.' },
+      'clustered-vs-nonclustered-indexes': { title: 'Clustered vs Non-clustered Indexes', summary: 'Rows-in-the-leaf vs pointer-to-heap; the secondary-index double-lookup, Postgres CLUSTER vs InnoDB permanent PK clustering, and the clustering factor.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

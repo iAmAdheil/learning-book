@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MVCC — How Postgres Implements Multi-Version Concurrency Control — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* diag-* SVG vocabulary shim — maps to the same theme-aware CSS vars style.css uses for .node-*/.edge-* */
+    .diagram-svg .diag-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .diag-box, .diagram-svg .diag-box.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diag-box-warn { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .diagram-svg .diag-box-result { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-box-cover { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diagram-label { fill: var(--text); font-family: var(--font); font-size: 13px; }
+    .diagram-svg .diagram-sub { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .diag-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .diagram-svg .step-el.active .diag-edge, .diagram-svg .diag-edge.active { stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-edge-warn { stroke: var(--accent); stroke-dasharray: 4 3; fill: none; }
+    .diagram-svg .diag-warn-text { fill: var(--accent); font-weight: 600; }
+    .diagram-svg .diag-skip-text { fill: var(--text-muted); }
+    .diagram-svg .diag-divider { stroke: var(--border); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>MVCC — How Postgres Implements Multi-Version Concurrency Control</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Instead of locking a row so readers and writers take turns, Postgres keeps <strong>multiple physical versions of every row</strong> on the heap, each stamped with the transaction IDs that created and destroyed it (<code>xmin</code>/<code>xmax</code>). A transaction carries a <strong>snapshot</strong> — a frozen notion of "who had committed when I started" — and at read time walks the version chain, showing exactly the version its snapshot may see. The headline guarantee: <strong>reading never blocks writing and writing never blocks reading</strong> — MVCC removes the <em>read</em> lock, not the write-write exclusive lock.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">xmin</span>
+        <span class="badge tag">xmax</span>
+        <span class="badge tag">snapshot</span>
+        <span class="badge tag">visibility-check</span>
+        <span class="badge tag">clog</span>
+        <span class="badge tag">hint-bits</span>
+        <span class="badge tag">hot-update</span>
+        <span class="badge tag">oldest-xmin</span>
+        <span class="badge tag">snapshot-isolation</span>
+        <span class="meta-dates">Created 2026-06-17 · Updated 2026-06-30</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt><code>t_xmin</code></dt>
+        <dd>The transaction id that <strong>inserted</strong> this version — the "born at" stamp. A version is a candidate for visibility only once its <code>xmin</code> is committed and resolved relative to the reader's snapshot.</dd>
+
+        <dt><code>t_xmax</code></dt>
+        <dd>The transaction id that <strong>deleted or updated</strong> this version — the "died at" stamp; <code>0</code> means still live. A delete writes nothing but this stamp; the row's bytes stay on the page.</dd>
+
+        <dt><code>t_ctid</code> / version chain</dt>
+        <dd>A TID that points either to the tuple itself or forward to its <strong>newer version</strong>. An UPDATE links the old version's <code>ctid</code> to the new one, forming the chain a reader walks to find the version its snapshot may see.</dd>
+
+        <dt>Snapshot <code>(xmin:xmax:xip_list)</code></dt>
+        <dd>A frozen record of "who had committed when I started": <code>xmin</code> = lowest still-active txid, <code>xmax</code> = first not-yet-assigned txid, <code>xip_list</code> = txids in progress between them. A txid in <code>xip_list</code> is treated as in-progress for the snapshot's <em>entire life</em> — that frozen world is Snapshot Isolation.</dd>
+
+        <dt>Commit Log (clog / <code>pg_xact</code>)</dt>
+        <dd>A shared-memory array indexed by txid recording <code>IN_PROGRESS</code> / <code>COMMITTED</code> / <code>ABORTED</code>. The visibility check consults it to decide whether a version's <code>xmin</code> or <code>xmax</code> transaction actually committed.</dd>
+
+        <dt>Hint bits</dt>
+        <dd>Cached commit-status flags in <code>t_infomask</code> (<code>HEAP_XMIN_COMMITTED</code>, <code>HEAP_XMAX_COMMITTED</code>, …). The first reader resolves a tuple against the clog once and stamps the bit so later readers skip the clog — but setting it dirties the page, so a read can trigger a write.</dd>
+
+        <dt>HOT (Heap-Only Tuple)</dt>
+        <dd>An UPDATE optimization: when no indexed column changed and the new version fits on the same page, the old line pointer becomes <code>LP_REDIRECT</code> to the new slot and <strong>no new index entry is written</strong>, avoiding index write-amplification.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The version stamps are real columns you can inspect. Every heap tuple carries its MVCC bookkeeping physically on the page:</p>
+      <pre><code class="lang-sql">-- Inspect the version stamps directly
+SELECT ctid, xmin, xmax, * FROM accounts WHERE id = 7;
+
+-- The current transaction's snapshot: xmin:xmax:xip_list
+SELECT pg_current_snapshot();   -- 100:104:100,102</code></pre>
+
+      <p>Write DML at storage level is nothing more than stamping these fields:</p>
+      <ul>
+        <li><strong>INSERT</strong> → <code>xmin =</code> my txid, <code>xmax = 0</code>, <code>ctid →</code> self.</li>
+        <li><strong>DELETE</strong> → target's <code>xmax =</code> my txid. The bytes stay — only a "died at" stamp is written.</li>
+        <li><strong>UPDATE = DELETE + INSERT atomically</strong> → old version gets <code>xmax =</code> my txid <em>and</em> <code>t_ctid →</code> new version; new version gets <code>xmin =</code> my txid, <code>xmax = 0</code>. Nothing is edited in place — this is the seed of bloat.</li>
+      </ul>
+
+      <p>After transaction 104 updates row <code>id=7</code>, the heap holds a two-link version chain:</p>
+      <pre><code class="lang-text">row id=7:  (0,1) xmin=100 xmax=104 ctid→(0,2)     ← superseded by txn 104
+           (0,2) xmin=104 xmax=0   ctid→(0,2)     ← current version</code></pre>
+      <p>A reader whose snapshot still counts 104 as in-progress reads version <code>(0,1)</code>: the deleter's stamp "doesn't count," so the old version stays visible. A reader whose snapshot begins after 104 committed finds <code>(0,1)</code> deleted-and-visible, so it follows the <code>ctid</code> link to <code>(0,2)</code>. Same bytes on disk, two different "current" rows — and neither reader waited on the writer.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture MVCC as a <strong>ledger you never erase</strong> plus a <strong>time-stamped reading glass</strong>. Every change is a new line stamped "valid from txn X" and, when superseded, "valid until txn Y," with an arrow to its replacement — a delete just writes the until-stamp. Each transaction holds a reading glass frozen to one instant (its snapshot): it reads only the line whose <code>[from, until)</code> window contains that instant, and treats anyone mid-write at that instant as if their ink never dried. Two readers at different frozen instants see different "current" lines and never wait on each other.</p>
+      <p>Step through an UPDATE building the version chain, then watch two readers with different snapshots each resolve a <em>different</em> visible version from the very same bytes.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 400" aria-label="An UPDATE creating a two-version chain on the heap, and two readers with different snapshots each resolving a different visible version">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="20" y="28" class="diagram-label" font-weight="700">Heap — version chain for row id=7</text>
+
+          <!-- ── v1 ── -->
+          <g id="node-v1" class="step-el">
+            <rect x="30" y="45" width="240" height="105" rx="8" class="diag-box" />
+            <text x="45" y="72" class="diagram-label" font-weight="700">v1 · ctid (0,1)</text>
+            <text x="45" y="94" class="diagram-sub">xmin=100 (born)</text>
+            <text x="45" y="116" class="diagram-sub" id="v1-live">xmax=0 → still live</text>
+            <text x="45" y="138" class="diagram-sub" id="v1-dead">xmax=104 · ctid → (0,2)</text>
+          </g>
+
+          <!-- ctid chain arrow v1 → v2 -->
+          <line id="edge-ctid" class="step-el diag-edge" x1="150" y1="150" x2="150" y2="195" marker-end="url(#arrow)" />
+          <text x="160" y="178" class="diagram-sub" id="ctid-label">ctid</text>
+
+          <!-- ── v2 ── -->
+          <g id="node-v2" class="step-el">
+            <rect x="30" y="200" width="240" height="90" rx="8" class="diag-box diag-box-cover" />
+            <text x="45" y="227" class="diagram-label" font-weight="700">v2 · ctid (0,2)</text>
+            <text x="45" y="249" class="diagram-sub">xmin=104 (born)</text>
+            <text x="45" y="271" class="diagram-sub">xmax=0 → current</text>
+          </g>
+
+          <!-- ── Reader A ── -->
+          <g id="node-reader-a" class="step-el">
+            <rect x="360" y="55" width="260" height="90" rx="8" class="diag-box" />
+            <text x="375" y="82" class="diagram-label" font-weight="700">Reader A</text>
+            <text x="375" y="104" class="diagram-sub">snapshot 100:105:104</text>
+            <text x="375" y="126" class="diagram-sub">104 ∈ xip_list → in progress</text>
+          </g>
+          <line id="edge-a" class="step-el diag-edge" x1="360" y1="100" x2="275" y2="97" marker-end="url(#arrow)" />
+          <text id="sees-a" class="step-el diagram-sub diag-warn-text" x="288" y="88" font-weight="700">sees v1</text>
+
+          <!-- ── Reader B ── -->
+          <g id="node-reader-b" class="step-el">
+            <rect x="360" y="210" width="260" height="90" rx="8" class="diag-box" />
+            <text x="375" y="237" class="diagram-label" font-weight="700">Reader B</text>
+            <text x="375" y="259" class="diagram-sub">snapshot 106:110:</text>
+            <text x="375" y="281" class="diagram-sub">104 committed before snapshot</text>
+          </g>
+          <line id="edge-b" class="step-el diag-edge" x1="360" y1="255" x2="275" y2="248" marker-end="url(#arrow)" />
+          <text id="sees-b" class="step-el diagram-sub" x="288" y="238" font-weight="700">sees v2</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>The visibility check, precisely</h3>
+        <p>For each version, given my snapshot: a version is <strong>visible iff (A)</strong> its <code>xmin</code> is committed-and-visible-to-me <strong>and (B)</strong> no <code>xmax</code> that is committed-and-visible-to-me deleted it. "Committed-and-visible-to-me" for a txid resolves in order:</p>
+        <ol>
+          <li><strong>aborted</strong> (per clog) → never happened.</li>
+          <li><strong>≥ snapshot <code>xmax</code></strong> or <strong>in <code>xip_list</code></strong> → treated as in progress → not visible.</li>
+          <li>otherwise (committed before the snapshot, not in flight) → committed &amp; visible.</li>
+        </ol>
+        <p>The read-committed vs repeatable-read difference is <em>only</em> snapshot timing: READ COMMITTED takes a fresh snapshot per statement; REPEATABLE READ / SERIALIZABLE take one snapshot at the first statement. Same engine, different snapshot lifetime.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> reading <code>xmax != 0</code> as "this row is deleted." ❌
+          <pre><code class="lang-text">SELECT ctid, xmin, xmax FROM accounts WHERE id = 7;
+--  (0,1)  100  104     ← xmax is SET, but is the row gone?</code></pre>
+          <p>Why it breaks: <code>xmax</code> is only the id of the transaction that <em>attempted</em> the delete/update. Whether it "counts" depends entirely on <strong>your snapshot</strong> and the clog. If txn 104 is still in your <code>xip_list</code>, or later aborted, the <code>xmax</code> stamp is inert and version <code>(0,1)</code> is fully live <em>for you</em>. Visibility is a per-transaction question answered against a snapshot, never a raw field comparison.</p>
+        </div>
+
+        <h3>Hint bits — why a plain SELECT can write to disk</h3>
+        <p>Hitting the clog for every tuple on every read is expensive, so the first reader to resolve a tuple's commit status caches it in <code>t_infomask</code>. But setting a hint bit <strong>modifies the page → marks it dirty → it gets flushed.</strong> So a plain <code>SELECT</code> right after a bulk <code>COPY</code> resolves thousands of tuples against the clog, stamps hint bits, dirties pages, and triggers writebacks — a read causing writes and I/O. First query slow, later ones fast.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> leaving a transaction idle-in-transaction. One forgotten <code>BEGIN</code> bloats the whole database.
+          <pre><code class="lang-text">BEGIN;                       -- pins a low xmin for hours
+--  ... connection sits idle ...
+--  meanwhile OldestXmin is dragged down cluster-wide</code></pre>
+          <p>Why it breaks: VACUUM does not use the per-snapshot visibility check — it uses a stricter <strong>global</strong> test. It computes a cluster-wide <strong>xmin horizon</strong> (<code>OldestXmin</code>) = the smallest <code>xmin</code> across every active transaction. A dead tuple is reclaimable only if its <code>xmax</code> is committed <strong>and</strong> <code>xmax &lt; OldestXmin</code>. An idle transaction pins a low <code>xmin</code>, so every version deleted after it began becomes unreclaimable — <strong>across unrelated tables</strong>, because the horizon is global. Hence <code>idle_in_transaction_session_timeout</code>.</p>
+        </div>
+
+        <h3>HOT and pruning — reclaiming space between VACUUMs</h3>
+        <p>When a HOT update applies, the index keeps pointing at the original slot, which redirects to the current version:</p>
+        <pre><code class="lang-text">index ──▶ slot (0,1)[LP_REDIRECT] ──▶ slot (0,2) HEAP_ONLY  (current)</code></pre>
+        <p>HOT also enables <strong>pruning</strong>: an ordinary SELECT/UPDATE/INSERT can remove dead versions and collapse redirects <em>within a page, touching no index</em> — partial reclamation ahead of the next VACUUM.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>The page-and-slot layer MVCC stamps: <code>ctid</code> is a line-pointer TID, and the slot indirection is exactly what <code>LP_REDIRECT</code> reuses for HOT.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>The <em>timing</em> of the snapshot: per-statement vs per-transaction is the only thing separating READ COMMITTED from REPEATABLE READ on the same engine.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The other half of Postgres's hybrid: MVCC removes read locks, but 2PL still supplies the write-write exclusive lock.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Why the index alone can't confirm visibility — the visibility map exists precisely because of the MVCC bookkeeping described here.</span>
+      </a>
+      <a class="related-card" href="../table-bloat-and-autovacuum/index.html" data-entry="table-bloat-and-autovacuum">
+        <strong>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</strong>
+        <span>The downstream story: dead tuples and the <code>OldestXmin</code> horizon are exactly what VACUUM must clean up.</span>
+      </a>
+      <a class="related-card" href="../acid-properties/index.html" data-entry="acid-properties">
+        <strong>ACID Properties</strong>
+        <span>Isolation as a tunable dial — MVCC is the mechanism that implements the I in ACID without serializing every reader.</span>
+      </a>
+      <a class="related-card" href="../write-ahead-log/index.html" data-entry="write-ahead-log">
+        <strong>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</strong>
+        <span>Commit status lives in the clog, but durability of that commit and of the new versions is the WAL's job.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>Why hint-bit writes matter: dirtying a cached page schedules a writeback through the buffer manager.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/mvcc-intro.html" target="_blank" rel="noopener">PostgreSQL Documentation — Introduction to MVCC</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql05/02.html" target="_blank" rel="noopener">The Internals of PostgreSQL §5.2 — Tuple Structure</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql05/04.html" target="_blank" rel="noopener">The Internals of PostgreSQL §5.4 — Commit Log (clog)</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql05/05.html" target="_blank" rel="noopener">The Internals of PostgreSQL §5.5 — Transaction Snapshot</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql05/06.html" target="_blank" rel="noopener">The Internals of PostgreSQL §5.6 — Visibility Check Rules</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql07/01.html" target="_blank" rel="noopener">The Internals of PostgreSQL §7.1 — Heap-Only Tuples (HOT)</a> — fetched 2026-06-17</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">Snapshot <code>150:155:150,153</code>; tuple <code>xmin=152, xmax=0</code>; transaction 152 has already committed in wall-clock time. Is the tuple visible?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">Visible — 152 is not in <code>xip_list</code> and 152 &lt; <code>xmax</code> (155), so by snapshot membership its insert counts as committed; wall-clock timing is irrelevant.</button>
+            <button class="option" data-correct="false">Invisible — 152 ≥ <code>xmin</code> (150), so it started after the snapshot and cannot be seen.</button>
+            <button class="option" data-correct="false">Invisible — only txids strictly below the snapshot's <code>xmin</code> are ever visible.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Visibility is decided by snapshot membership, not wall-clock commit time (the umbrella is Snapshot Isolation). 152 sits between <code>xmin</code> and <code>xmax</code> but is absent from <code>xip_list</code>, so it resolves as committed-and-visible; <code>xmax=0</code> means nothing deleted it.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A read-only <code>SELECT</code> issued right after a bulk <code>COPY</code> causes disk writes. What is the mechanism?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The <code>SELECT</code> takes a shared row lock that must be persisted to disk before the read returns.</button>
+            <button class="option" data-correct="true">The first reader resolves each tuple's commit status against the clog and caches it as a hint bit in <code>t_infomask</code>; setting the bit dirties the page, which is then flushed.</button>
+            <button class="option" data-correct="false">MVCC creates a fresh version of every row a <code>SELECT</code> touches, and those new versions are written to the heap.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A hint-bit read is a storage-layer write: the first reader resolves status once against the clog, stamps <code>HEAP_XMIN_COMMITTED</code>/<code>HEAP_XMAX_COMMITTED</code>, which dirties the page and schedules a writeback. First query slow, later ones fast.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A table has indexes on <code>email</code>, <code>created_at</code>, and <code>status</code>. You run <code>UPDATE users SET last_seen = now() WHERE id = 7</code> (no index on <code>last_seen</code>). Is this HOT-eligible, and what happens to line pointers and index entries?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Yes — HOT-eligible when <strong>both</strong> conditions hold: no indexed column changed (<code>last_seen</code> is unindexed ✓) and the new version fits on the same page. Then the old line pointer becomes <code>LP_REDIRECT</code> pointing to the new tuple's slot; the old tuple is flagged <code>HEAP_HOT_UPDATED</code> and the new one <code>HEAP_ONLY_TUPLE</code>. <strong>No new index entry is written</strong> — all 3 indexes keep pointing at the original slot, which redirects to the current version. Without HOT, all 3 indexes would each gain a new entry despite none of their columns changing — 3 wasted writes plus bloat. HOT → 0 index writes.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: UPDATE version chain + snapshot visibility) ─
+    const steps = [
+      { activate: ['#node-v1', '#v1-live'],
+        explanation: 'Transaction 100 inserted row id=7. Version v1 lives at ctid (0,1) with xmin=100 and xmax=0 — born, still live, no deleter stamp.' },
+      { activate: ['#node-v1', '#v1-dead', '#edge-ctid', '#ctid-label', '#node-v2'],
+        explanation: 'Transaction 104 UPDATEs the row. UPDATE = delete + insert: v1 gets xmax=104 and its ctid now points forward to (0,2); a new version v2 is written at (0,2) with xmin=104, xmax=0. Nothing was edited in place.' },
+      { activate: ['#node-reader-a', '#edge-a', '#sees-a', '#node-v1', '#v1-dead'],
+        explanation: 'Reader A holds snapshot 100:105:104 — transaction 104 is in its xip_list, i.e. in progress. So v1’s xmax=104 stamp does not count: v1 is still live. Reader A sees v1.' },
+      { activate: ['#node-reader-b', '#edge-b', '#sees-b', '#node-v2'],
+        explanation: 'Reader B holds snapshot 106:110: — transaction 104 committed before the snapshot began. Now v1’s xmax=104 counts as a visible delete, so Reader B follows the ctid chain and sees v2. Same bytes, two different current rows, and neither reader ever waited on the writer.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'heap-storage-layout':        { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.' },
+      'isolation-levels':           { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'two-phase-locking':          { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres’s MVCC+strict-2PL hybrid.' },
+      'covering-indexes':           { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+      'table-bloat-and-autovacuum': { title: 'Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind', summary: 'Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM’s two bits, freezing & XID wraparound, and autovacuum triggers/tuning.' },
+      'acid-properties':            { title: 'ACID Properties', summary: 'The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the app’s job, isolation as a tunable dial, and the wedding-ceremony model.' },
+      'write-ahead-log':            { title: 'Write-Ahead Log (WAL) — Crash Recovery & the Durability Guarantee', summary: 'Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints & redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.' },
+      'buffer-pool':                { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

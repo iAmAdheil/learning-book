@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Encapsulation &amp; Decapsulation — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific: the nesting-doll PDU boxes need per-layer identity */
+    .diagram-svg .pdu-box { stroke-width: 1.5; transition: stroke-width 300ms ease, fill 300ms ease; }
+    .diagram-svg .pdu-box.active { stroke-width: 3.5; }
+    .diagram-svg .pdu-app  { fill: var(--surface-elev); stroke: var(--text-muted); }
+    .diagram-svg .pdu-tcp  { fill: var(--good-soft);    stroke: var(--good); }
+    .diagram-svg .pdu-ip   { fill: var(--warn-soft);    stroke: var(--warn); }
+    .diagram-svg .pdu-eth  { fill: var(--accent-soft);  stroke: var(--accent); }
+    .diagram-svg .pdu-bits { fill: var(--surface-elev); stroke: var(--border); }
+    .diagram-svg .box-text { fill: var(--text); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .pdu-name { fill: var(--text); font-family: var(--font); font-size: 12px; font-weight: 700; }
+    .diagram-svg .divider  { stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .ptr-line { stroke: var(--text-muted); stroke-width: 1.5; fill: none; }
+    .diagram-svg .ptr-line.active { stroke: var(--accent); stroke-width: 2.5; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Encapsulation &amp; Decapsulation — Segments → Packets → Frames → Bits</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text"><strong>Encapsulation</strong> is what turns an abstract layered diagram into actual bytes on a wire. On the way down the stack, every layer wraps whatever the layer above handed it inside its own <strong>header</strong> — nesting dolls, envelopes inside envelopes. On the way up, every layer strips its own header and hands the rest along. The single rule that makes the whole internet composable falls out of this: <em>each layer reads and writes only its own header, and treats everything inside as opaque cargo it never opens</em>. That one picture explains routing, the MAC-versus-IP split, why encryption doesn't break forwarding, and why tiny packets waste bandwidth.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="badge tag">decapsulation</span>
+        <span class="badge tag">pdu</span>
+        <span class="badge tag">headers</span>
+        <span class="badge tag">demultiplexing</span>
+        <span class="badge tag">mtu</span>
+        <span class="badge tag">ethertype</span>
+        <span class="badge tag">ttl</span>
+        <span class="badge tag">mac</span>
+        <span class="badge tag">ip</span>
+        <span class="meta-dates">Created 2026-07-07 · Updated 2026-07-07</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Encapsulation / decapsulation</dt>
+        <dd><strong>Encapsulation</strong> is the downward journey on the sending host: each layer takes the unit it received from above, prepends its own header, and passes the result down. <strong>Decapsulation</strong> is the exact mirror on the receiving side: each layer validates and removes its own header, then hands what remains upward. Nothing is ever rewritten in the middle — only wrapped and unwrapped at the ends.</dd>
+
+        <dt>PDU (Protocol Data Unit)</dt>
+        <dd>The name for "one unit of data at a given layer", <em>including</em> that layer's header. The word itself pins the layer: <strong>data</strong> (application), <strong>segment</strong> (TCP) or <strong>datagram</strong> (UDP), <strong>packet</strong> (IP), <strong>frame</strong> (Ethernet), <strong>bits</strong> (physical). Saying "the frame was dropped" versus "the packet was routed" is a statement about <em>where</em> something happened.</dd>
+
+        <dt>Header and trailer</dt>
+        <dd>A fixed-format block of control fields a layer attaches to its payload. Headers are <strong>prepended</strong> — added to the front — which is why the original application bytes sit untouched in the middle of the final frame. Layer 2 is the one layer that also appends a <strong>trailer</strong>: Ethernet's 4-byte FCS checksum, which must come last because it is computed over everything before it.</dd>
+
+        <dt>The opaque-payload rule</dt>
+        <dd>A layer parses its own header and nothing else. Ethernet has no idea it is carrying IP; IP never peeks at TCP; TCP never parses HTTP. The payload is bytes to be carried, not bytes to be understood. This is the layering principle made physical, and it is what lets a protocol change without every other layer changing with it.</dd>
+
+        <dt>Demultiplexing (demuxing)</dt>
+        <dd>The receiver's problem: given a blob of bytes, <em>which</em> upper-layer protocol should it be handed to? Solved by a <strong>pointer field</strong> in each header that names what is nested inside it — Ethernet's <strong>EtherType</strong>, IP's <strong>Protocol</strong> number, TCP's <strong>destination port</strong>. Follow the chain of signposts and you unwrap correctly every time, without guessing.</dd>
+
+        <dt>MTU (Maximum Transmission Unit)</dt>
+        <dd>The largest payload a single link-layer frame may carry — 1500 bytes on standard Ethernet. It caps how much application data one frame can amortize its fixed header cost across, which is why header <strong>overhead</strong> and MTU are the same conversation.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>Take a browser issuing <code>GET / HTTP/1.1</code> over TCP to a web server. Follow those bytes down the sending host's stack and watch each layer wrap what it was given:</p>
+
+      <pre><code class="lang-text">L7 App        │ GET / HTTP/1.1 ...                              │   ← "Data"
+L4 Transport  │[TCP hdr]│ GET / ... │                           │   ← "Segment"
+L3 Network    │[IP hdr]│[TCP hdr]│ GET / ... │                  │   ← "Packet"
+L2 Data Link  │[Eth hdr]│[IP hdr]│[TCP hdr]│ GET / ... │[Eth FCS]│   ← "Frame"
+L1 Physical   │ 010101101000101110100101110001010110...         │   ← "Bits"</code></pre>
+
+      <p>Three details in that picture do most of the work. First, <strong>each layer's payload is the entire PDU from the layer above</strong> — header and all. IP does not carry "the HTTP request"; it carries "the TCP segment", which happens to contain the HTTP request. Dolls inside dolls. Second, <strong>headers are prepended</strong>, so the original application bytes never move; they simply end up further from the front. Third, <strong>L2 alone adds a trailer</strong> as well as a header.</p>
+
+      <p>The vocabulary is not decoration — each PDU name identifies a layer and what that layer contributed:</p>
+
+      <table class="compare">
+        <thead>
+          <tr><th>Layer</th><th>PDU name</th><th>What that layer added</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>L7–5 Application</td><td><strong>Data</strong> / message</td><td>the raw content itself</td></tr>
+          <tr><td>L4 Transport</td><td><strong>Segment</strong> (TCP) / <strong>Datagram</strong> (UDP)</td><td>ports plus reliability control</td></tr>
+          <tr><td>L3 Network</td><td><strong>Packet</strong></td><td>source/destination IP, TTL</td></tr>
+          <tr><td>L2 Data Link</td><td><strong>Frame</strong></td><td>source/destination MAC, plus a trailer</td></tr>
+          <tr><td>L1 Physical</td><td><strong>Bits</strong></td><td>signalling only — no header</td></tr>
+        </tbody>
+      </table>
+
+      <h3>The load-bearing header fields</h3>
+
+      <p>Roughly 58 bytes of header get added to that request, and almost every field is one of the addressing ideas from the layer model turned into concrete bytes:</p>
+
+      <pre><code class="lang-text">L4  TCP header      (~20 B)  src/dst PORT    which application process
+                             seq / ack #     ordering and confirmation
+                             flags           SYN / ACK / FIN / RST
+                             window          flow control
+                             checksum
+
+L3  IP header       (~20 B)  src/dst IP      end-to-end; never changes en route
+                             TTL             hop counter, −1 per router, 0 = drop
+                             Protocol        what L4 is inside (6=TCP 17=UDP 1=ICMP)
+                             checksum
+
+L2  Ethernet    (14 B + 4 B) dst/src MAC     one hop only; rewritten every hop
+                             EtherType       what L3 is inside (0x0800=IPv4,
+                                             0x0806=ARP, 0x86DD=IPv6)
+                             FCS (trailer)   error detection</code></pre>
+
+      <p>Read the three address fields together and the hierarchy is literal, stacked in bytes: TCP carries <strong>ports</strong> (which application), IP carries <strong>end-to-end addresses</strong> (fixed for the whole journey), Ethernet carries <strong>MACs</strong> (valid for exactly one hop).</p>
+
+      <h3>Demultiplexing: how the receiver knows how to unwrap</h3>
+
+      <p>Bits arriving off a wire are just bits. The receiving machine never guesses what is inside them, because every header contains a "what's nested in me" pointer:</p>
+
+      <pre><code class="lang-text">Ethernet ──EtherType 0x0800──►  payload is IPv4
+   IP    ──Protocol 6────────►  payload is TCP
+   TCP   ──Dest Port 443──────►  hand to the HTTPS server process</code></pre>
+
+      <p>Decapsulation is then just that chain walked in order. Each layer validates its own header, strips it, and uses the pointer to choose who gets the rest:</p>
+
+      <pre><code class="lang-text">Bits → L2  (is this my MAC? is the FCS ok?)   strip → EtherType says IPv4, up
+     → L3  (is this my IP? TTL/checksum ok?)  strip → Protocol says TCP, up
+     → L4  (which port / which connection?)   strip → port 443, hand to app
+     → L7  application reads "GET / HTTP/1.1"</code></pre>
+
+      <h3>What routers and switches actually unwrap</h3>
+
+      <p>Devices in the middle decapsulate only as far as their job requires — never further. A <strong>switch</strong> unwraps to L2, reads the destination MAC, forwards the frame out a port, and never looks at the IP or TCP inside. A <strong>router</strong> unwraps to L3, reads the destination IP, decides the next hop, and then does something that surprises people the first time they see it: it <em>discards the entire Ethernet frame and builds a brand-new one</em> for the next link.</p>
+
+      <pre><code class="lang-text">Router: strip L2 → read/keep IP packet → decide next hop → TTL−1 → wrap in NEW L2 frame → send</code></pre>
+
+      <p>The IP packet inside is handed on essentially untouched (only TTL and the header checksum change); the TCP and HTTP inside it are never opened at all. This is exactly <em>why</em> IP is end-to-end while MAC is rewritten every hop: the IP packet is the durable inner doll that travels the whole way, and the Ethernet frame is a disposable outer doll torn off and rebuilt at every router.</p>
+
+      <h3>What the headers cost</h3>
+
+      <pre><code class="lang-text">TCP (20) + IP (20) + Ethernet header+trailer (18) ≈ 58 bytes of overhead per frame</code></pre>
+
+      <p>That cost is fixed regardless of how much data rides inside it. A 1-byte payload still puts about 59 bytes on the wire — roughly 98% overhead. A full 1500-byte MTU-sized frame amortizes the same 58 bytes down to under 4%. That single ratio is why small, chatty packets hurt throughput and why MTU sizing matters at all.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Think of posting a letter through an office. You write the letter (the data). Your assistant seals it in an envelope marked with a room number (the TCP port). That envelope goes into a bigger one addressed to a building across the country (the IP addresses). That one goes into a courier bag addressed only to the van waiting outside (the MAC addresses) — a bag that gets thrown away and replaced at every depot along the route, while the country-wide envelope inside is never opened once. Nobody along the way reads the letter. They don't need to; each wrapper tells them exactly what they need, and each wrapper also carries a note saying what kind of thing is inside it, so whoever opens it knows who to pass it to next.</p>
+
+      <p>Step through it below. The first five steps wrap the request going down the sending stack — watch the PDU name on the right change as each header lands. The last five unwrap it on the receiving host, following the pointer chain at the bottom: EtherType names IP, IP's Protocol field names TCP, TCP's port names the application.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 700 382" aria-label="Encapsulation down the stack: application data is wrapped by a TCP header into a segment, an IP header into a packet, an Ethernet header and FCS trailer into a frame, then sent as bits; and decapsulation up the stack, following the EtherType, IP Protocol and TCP port demultiplexing pointers">
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="8" y="20" class="pdu-name">Sending host — down the stack (encapsulation)</text>
+
+          <!-- ── L7: Data ── -->
+          <g id="row-l7" class="step-el">
+            <text x="8" y="66" class="label-text">L7 Application</text>
+            <rect id="box-data-7" class="pdu-box pdu-app" x="300" y="48" width="260" height="30" rx="5" />
+            <text x="430" y="67" text-anchor="middle" class="box-text">GET / HTTP/1.1</text>
+            <text x="615" y="67" class="pdu-name">Data</text>
+          </g>
+
+          <!-- ── L4: Segment ── -->
+          <g id="row-l4" class="step-el">
+            <text x="8" y="108" class="label-text">L4 Transport</text>
+            <rect id="hdr-tcp" class="pdu-box pdu-tcp" x="240" y="90" width="60" height="30" rx="5" />
+            <text x="270" y="109" text-anchor="middle" class="box-text">TCP</text>
+            <rect class="pdu-box pdu-app" x="300" y="90" width="260" height="30" rx="5" />
+            <text x="430" y="109" text-anchor="middle" class="box-text">GET / HTTP/1.1</text>
+            <text x="615" y="109" class="pdu-name">Segment</text>
+          </g>
+
+          <!-- ── L3: Packet ── -->
+          <g id="row-l3" class="step-el">
+            <text x="8" y="150" class="label-text">L3 Network</text>
+            <rect id="hdr-ip" class="pdu-box pdu-ip" x="180" y="132" width="60" height="30" rx="5" />
+            <text x="210" y="151" text-anchor="middle" class="box-text">IP</text>
+            <rect class="pdu-box pdu-tcp" x="240" y="132" width="60" height="30" rx="5" />
+            <text x="270" y="151" text-anchor="middle" class="box-text">TCP</text>
+            <rect class="pdu-box pdu-app" x="300" y="132" width="260" height="30" rx="5" />
+            <text x="430" y="151" text-anchor="middle" class="box-text">GET / HTTP/1.1</text>
+            <text x="615" y="151" class="pdu-name">Packet</text>
+          </g>
+
+          <!-- ── L2: Frame ── -->
+          <g id="row-l2" class="step-el">
+            <text x="8" y="192" class="label-text">L2 Data Link</text>
+            <rect id="hdr-eth" class="pdu-box pdu-eth" x="120" y="174" width="60" height="30" rx="5" />
+            <text x="150" y="193" text-anchor="middle" class="box-text">Eth</text>
+            <rect class="pdu-box pdu-ip" x="180" y="174" width="60" height="30" rx="5" />
+            <text x="210" y="193" text-anchor="middle" class="box-text">IP</text>
+            <rect class="pdu-box pdu-tcp" x="240" y="174" width="60" height="30" rx="5" />
+            <text x="270" y="193" text-anchor="middle" class="box-text">TCP</text>
+            <rect class="pdu-box pdu-app" x="300" y="174" width="260" height="30" rx="5" />
+            <text x="430" y="193" text-anchor="middle" class="box-text">GET / HTTP/1.1</text>
+            <rect id="trl-fcs" class="pdu-box pdu-eth" x="560" y="174" width="45" height="30" rx="5" />
+            <text x="582" y="193" text-anchor="middle" class="box-text">FCS</text>
+            <text x="615" y="193" class="pdu-name">Frame</text>
+          </g>
+
+          <!-- ── L1: Bits ── -->
+          <g id="row-l1" class="step-el">
+            <text x="8" y="234" class="label-text">L1 Physical</text>
+            <rect class="pdu-box pdu-bits" x="120" y="216" width="485" height="30" rx="5" />
+            <text x="362" y="235" text-anchor="middle" class="box-text">0101101000101110100101110001010110…</text>
+            <text x="615" y="235" class="pdu-name">Bits</text>
+          </g>
+
+          <line x1="8" y1="262" x2="692" y2="262" class="divider" stroke-dasharray="4 4" />
+          <text x="8" y="282" class="pdu-name">Receiving host — up the stack: each header names what is nested inside it</text>
+
+          <!-- ── Demux pointer 1: EtherType ── -->
+          <g id="ptr-eth" class="step-el">
+            <rect class="pdu-box pdu-eth" x="120" y="296" width="112" height="22" rx="5" />
+            <text x="176" y="311" text-anchor="middle" class="box-text">Ethernet header</text>
+            <text x="304" y="303" text-anchor="middle" class="label-text">EtherType 0x0800</text>
+            <line class="ptr-line" x1="236" y1="307" x2="372" y2="307" marker-end="url(#arrow)" />
+            <rect class="pdu-box pdu-ip" x="378" y="296" width="180" height="22" rx="5" />
+            <text x="468" y="311" text-anchor="middle" class="box-text">payload is IPv4 → L3</text>
+          </g>
+
+          <!-- ── Demux pointer 2: IP Protocol ── -->
+          <g id="ptr-ip" class="step-el">
+            <rect class="pdu-box pdu-ip" x="120" y="330" width="112" height="22" rx="5" />
+            <text x="176" y="345" text-anchor="middle" class="box-text">IP header</text>
+            <text x="304" y="337" text-anchor="middle" class="label-text">Protocol = 6</text>
+            <line class="ptr-line" x1="236" y1="341" x2="372" y2="341" marker-end="url(#arrow)" />
+            <rect class="pdu-box pdu-tcp" x="378" y="330" width="180" height="22" rx="5" />
+            <text x="468" y="345" text-anchor="middle" class="box-text">payload is TCP → L4</text>
+          </g>
+
+          <!-- ── Demux pointer 3: TCP port ── -->
+          <g id="ptr-tcp" class="step-el">
+            <rect class="pdu-box pdu-tcp" x="120" y="364" width="112" height="22" rx="5" />
+            <text x="176" y="379" text-anchor="middle" class="box-text">TCP header</text>
+            <text x="304" y="371" text-anchor="middle" class="label-text">Dest port 443</text>
+            <line class="ptr-line" x1="236" y1="375" x2="372" y2="375" marker-end="url(#arrow)" />
+            <rect class="pdu-box pdu-app" x="378" y="364" width="180" height="22" rx="5" />
+            <text x="468" y="379" text-anchor="middle" class="box-text">HTTPS process → L7</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>The opaque-payload rule is what makes encryption possible</h3>
+        <p>An HTTPS request is TLS-encrypted application data sitting inside a TCP segment inside an IP packet. Every router along the path forwards it correctly while being completely unable to read it — because a router was never reading it in the first place. It parses the IP header, consults a routing table, decrements TTL, rebuilds the frame, and sends. Encryption lives strictly inside the payload, and the payload is exactly the part nobody in the middle touches. The envelope is legible; the letter is not; delivery only ever needed the envelope.</p>
+        <p>The same property is why new application protocols can be deployed without upgrading a single router, and why a switch that has never heard of IPv6 still forwards IPv6 frames without complaint.</p>
+
+        <h3>Only the final destination unwraps all the way to L7</h3>
+        <p>Decapsulation is not an all-or-nothing operation. A switch unwraps to L2 and stops; a router unwraps to L3 and stops; only the endpoint continues to L4 and L7. Each device unwraps precisely as far as its forwarding decision requires and no further — which is both a performance property and a security property.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming routers rewrite IP addresses the way they rewrite MAC addresses.
+          <pre><code class="lang-text">WRONG mental model — "each hop readdresses the packet":
+  hop 1:  src IP 10.0.0.5      dst IP 10.0.0.1   (the router)
+  hop 2:  src IP 10.0.0.1      dst IP 93.184.x.x
+
+RIGHT — src/dst IP are constant end-to-end; only L2 is rebuilt:
+  hop 1:  [Eth: me → router]  [IP: 10.0.0.5 → 93.184.x.x]  TTL 64
+  hop 2:  [Eth: router → next] [IP: 10.0.0.5 → 93.184.x.x]  TTL 63</code></pre>
+          <p>Why it breaks: if IP addresses changed per hop, the destination would have no idea who to reply to and the end-to-end abstraction would collapse. MAC addresses are local — they only ever name "the next device on this link" — so they <em>must</em> be rewritten. IP addresses name the endpoints of the whole journey, so they must not be. The one deliberate exception is <strong>NAT</strong>, which rewrites IP addresses (and ports) on purpose. That is precisely why NAT is described as a layering violation and a special hack rather than normal routing: it breaks the invariant everything else depends on.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> saying headers are "appended", or using the PDU names interchangeably.
+          <pre><code class="lang-text">"the packet was dropped by the switch"     ← a switch handles FRAMES
+"the frame was routed to the next AS"      ← routing acts on PACKETS
+"the packet was retransmitted by TCP"      ← TCP retransmits SEGMENTS</code></pre>
+          <p>Why it matters: headers are <em>prepended</em>, so the layer name and the position in the byte stream line up — outermost header = lowest layer. And each PDU name pins the exact layer at which something happened, which is the fastest diagnostic signal there is. "Frames are being dropped" points at cabling, duplex mismatch or FCS errors; "packets are being dropped" points at routing, TTL expiry or congestion; "segments are being retransmitted" points at loss or window behaviour above IP. Collapsing the vocabulary throws away the layer information for free.</p>
+        </div>
+
+        <h3>Overhead, MTU, and why chatty traffic is expensive</h3>
+        <p>The ~58 bytes of TCP+IP+Ethernet overhead are paid per frame, not per byte of useful data. Sending 1500 bytes of payload as one full-MTU frame costs 58 bytes of headers; sending the same 1500 bytes as 30 small 50-byte writes costs 30 × 58 = 1740 bytes of headers — more overhead than payload. This is the arithmetic underneath Nagle's algorithm, message batching, and the general advice to avoid tiny writes on a socket. It is also why the L2 MTU propagates upward as a constraint on L4 segment sizing: the frame is the unit the overhead is charged against.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model</strong>
+        <span>Encapsulation is the OSI layer split made physical — the PDU names and the switch-versus-router distinction come straight from there.</span>
+      </a>
+      <a class="related-card" href="../tcp-ip-model/index.html" data-entry="tcp-ip-model">
+        <strong>TCP/IP Model</strong>
+        <span>The stack these headers actually belong to; the narrow waist is why the IP header is the one wrapper every hop must agree on.</span>
+      </a>
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End</strong>
+        <span>The full journey in which this wrapping and per-hop re-framing happens, alongside DNS, ARP and the handshakes.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>The outermost doll in detail: the 14-byte header, the FCS trailer, the EtherType demux field and the 1500-byte MTU.</span>
+      </a>
+      <a class="related-card" href="../bandwidth-throughput-latency-jitter/index.html" data-entry="bandwidth-throughput-latency-jitter">
+        <strong>Bandwidth vs Throughput vs Latency vs Jitter</strong>
+        <span>Where header overhead shows up as a measurable gap between raw link bandwidth and useful application throughput.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>RFC 1122 — Requirements for Internet Hosts (1989)</li>
+          <li>IEEE 802.3 — Ethernet frame format</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A packet crosses 5 routers on its way to a server. How many times is the Ethernet frame rebuilt, and how many times do the IP source and destination change?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The frame is built once and survives the whole path; the IP addresses are rewritten at each of the 5 routers.</button>
+            <button class="option" data-correct="true">The frame is rebuilt about 6 times — once per link — while the IP source and destination change zero times (absent NAT).</button>
+            <button class="option" data-correct="false">Both the frame and the IP header are rebuilt at every hop, 5 times each.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">MAC addresses are one-hop-only, so each router discards the incoming frame and builds a fresh one for the next link — roughly one per link, 6 links for 5 routers. The IP header names the two endpoints of the entire journey, so it is carried through untouched apart from TTL and its checksum.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Bits arrive off the wire. How does the receiving machine know whether the Ethernet payload is IP or ARP, and then whether the IP payload is TCP or UDP?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">It inspects the payload bytes and pattern-matches the known header layouts until one parses cleanly.</button>
+            <button class="option" data-correct="false">The physical layer signals the protocol out of band, before the frame is delivered.</button>
+            <button class="option" data-correct="true">Each header carries a pointer field naming what is nested inside it: EtherType (0x0800 = IPv4, 0x0806 = ARP), then IP's Protocol field (6 = TCP, 17 = UDP).</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">This is demultiplexing. Nothing is inferred or guessed — every header explicitly names the protocol of its own payload, so decapsulation follows an unambiguous chain of signposts up the stack, ending at the TCP destination port which names the application process.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why can a router forward HTTPS traffic perfectly well even though it cannot read any of it? Connect your answer to a rule stated earlier.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Because of the <strong>opaque-payload rule</strong>: a layer parses only its own header and treats everything inside as cargo. A router's job needs exactly one thing — the destination IP in the L3 header — so it reads that, decrements TTL, strips the incoming Ethernet frame, wraps the untouched IP packet in a new frame for the next hop, and sends. The TCP segment, the TLS record and the HTTP request inside were never going to be opened even if they were plaintext. Encryption lives strictly inside the payload, so it is invisible to the forwarding decision. The router needs the envelope, not the letter.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (encapsulation down, decapsulation up) ─
+    const steps = [
+      { activate: ['#row-l7'],
+        explanation: 'L7 — the application produces raw content: the bytes "GET / HTTP/1.1". No headers yet. At this layer the PDU is simply called data (or a message).' },
+      { activate: ['#row-l4', '#hdr-tcp'],
+        explanation: 'L4 — TCP prepends its ~20-byte header, carrying source and destination ports, sequence and ack numbers, flags and a window. The whole thing is now a segment. Note the payload of the segment is the entire unit from above.' },
+      { activate: ['#row-l3', '#hdr-ip'],
+        explanation: 'L3 — IP prepends its ~20-byte header in front of the segment: source and destination IP, TTL, and a Protocol field. It never looks inside the TCP header; the segment is opaque cargo. The unit is now a packet.' },
+      { activate: ['#row-l2', '#hdr-eth', '#trl-fcs'],
+        explanation: 'L2 — Ethernet wraps the packet in a 14-byte header (destination and source MAC, EtherType) and, uniquely, also appends a 4-byte FCS trailer computed over everything before it. The unit is now a frame. The original HTTP bytes have not moved — they are simply buried deepest.' },
+      { activate: ['#row-l1'],
+        explanation: 'L1 — the frame is transmitted as electrical, optical or radio signalling. No header is added here; bits are just the frame encoded onto the medium. Total added: about 58 bytes of overhead wrapped around the payload.' },
+      { activate: ['#row-l1', '#row-l2'],
+        explanation: 'Now decapsulation. The receiver reassembles bits into a frame and asks its L2 questions: is this destination MAC mine, and does the FCS check out? If yes, it strips the Ethernet header and trailer.' },
+      { activate: ['#row-l2', '#ptr-eth'],
+        explanation: 'But strip it to hand to whom? The Ethernet header answers that itself: EtherType 0x0800 means the payload is IPv4 (0x0806 would mean ARP). This is the first link in the demultiplexing chain.' },
+      { activate: ['#row-l3', '#ptr-ip'],
+        explanation: 'L3 validates its own header — is this destination IP mine, is TTL still alive, does the checksum hold? — strips it, and reads the Protocol field: 6 means TCP (17 would be UDP, 1 ICMP). Second signpost followed.' },
+      { activate: ['#row-l4', '#ptr-tcp'],
+        explanation: 'L4 strips the TCP header and uses the destination port, 443, to pick which listening process gets the payload. Third and final signpost: ports are the demux step that reaches an actual application.' },
+      { activate: ['#row-l7', '#row-l3', '#row-l2'],
+        explanation: 'The application reads exactly the bytes that were written: "GET / HTTP/1.1". Compare the two highlighted wrappers to see the whole lesson: the IP packet is the durable inner doll carried end-to-end unchanged, while the Ethernet frame is a disposable outer doll thrown away and rebuilt at every single router along the path.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el, .diagram-svg .pdu-box').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'osi-model':        { title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists', summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.' },
+      'tcp-ip-model':     { title: 'TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI', summary: 'The real stack the internet runs on: 4- vs 5-layer, the OSI→TCP/IP mapping, where TLS/sockets sit, and the hourglass/narrow-waist model.' },
+      'how-internet-works': { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+      'ethernet':         { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'bandwidth-throughput-latency-jitter': { title: 'Bandwidth vs Throughput vs Latency vs Jitter', summary: 'The four performance words precisely: rates vs times, the highway model, bandwidth≠speed, latency-bound vs bandwidth-bound, BDP, and jitter/QoS.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

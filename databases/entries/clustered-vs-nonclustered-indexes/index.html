@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Clustered vs Non-clustered Indexes — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Clustered vs Non-clustered Indexes</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">An index can either <em>be</em> the table — rows stored physically in key order inside the leaf — or sit beside it, holding only keys and pointers back to a separate heap. That single structural choice decides how fast your primary-key lookups, range scans, and secondary-index queries run, and it differs sharply between Postgres and MySQL InnoDB.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">clustered-index</span>
+        <span class="badge tag">non-clustered-index</span>
+        <span class="badge tag">index-organized-table</span>
+        <span class="badge tag">clustering-factor</span>
+        <span class="badge tag">innodb</span>
+        <span class="badge tag">postgres-cluster</span>
+        <span class="meta-dates">Created 2026-06-06 · Updated 2026-06-06</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Clustered index</dt>
+        <dd>An index whose leaf nodes <em>are</em> the table rows, physically stored in key order. There is no separate heap — the table is the index. Also called an "index-organized table." A table can have at most one.</dd>
+
+        <dt>Non-clustered (secondary) index</dt>
+        <dd>A separate structure whose leaf holds only the indexed key plus a pointer to the actual row. The table's physical order is unrelated to it. A table can have many.</dd>
+
+        <dt>Heap</dt>
+        <dd>An unordered pile of rows (Postgres's default table storage). Rows land wherever there is free space; indexes point into it via a physical row address.</dd>
+
+        <dt>TID (tuple identifier)</dt>
+        <dd>Postgres's physical row pointer — a (page, offset) address stored in a non-clustered index leaf, used to jump directly to the row in the heap.</dd>
+
+        <dt>Clustering factor</dt>
+        <dd>A measure of how well the table's physical row order matches an index's logical order. High correlation means range scans touch few, adjacent pages; low correlation means scattered random I/O.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The defining difference shows up in where a query has to look. Consider a <code>users</code> table clustered by <code>id</code> with a secondary index on <code>email</code>.</p>
+      <pre><code class="lang-sql">-- MySQL InnoDB: the table is ALWAYS clustered on the PK.
+-- The full rows live in the PK B-tree leaves — no separate heap exists.
+CREATE TABLE users (
+  id    BIGINT PRIMARY KEY,     -- clustering key: rows physically sorted by id
+  email VARCHAR(255),
+  name  VARCHAR(255),
+  KEY idx_email (email)         -- secondary index
+);
+
+-- A PK lookup returns the whole row from the leaf — zero extra fetch:
+SELECT * FROM users WHERE id = 3;        -- one B-tree descent, done.
+
+-- A secondary lookup is a DOUBLE lookup:
+SELECT * FROM users WHERE email = 'a@x.com';
+--   (1) descend idx_email  -> finds the PK value, e.g. id = 3
+--   (2) descend the clustered PK B-tree for id = 3 -> finally gets the row
+-- Two B-tree traversals per matched row.</code></pre>
+      <p>The secondary index does <strong>not</strong> store a physical pointer to the row. In a clustered table, rows move as the B-tree splits pages, so any stored physical address would go stale. Instead the secondary index stores the <strong>clustering key</strong> (<code>id=3</code>), and that key is re-looked-up in the clustered index — hence the second descent.</p>
+      <pre><code class="lang-sql">-- Postgres takes the other path: heap + separate (non-clustered) indexes.
+-- There is no permanently clustered table. CLUSTER is a ONE-TIME reorder:
+CLUSTER users USING users_pkey;   -- physically rewrite the heap into PK order, ONCE
+-- New/updated rows go to free space afterward, so the ordering DECAYS.
+-- CLUSTER takes an ACCESS EXCLUSIVE lock (blocks reads + writes) -> maintenance op.</code></pre>
+      <p>In Postgres, the secondary (and primary) index leaf holds a TID pointing into the heap. A lookup is one index descent plus one direct jump to the heap page — never a second B-tree descent.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of a non-clustered index as the index at the back of a textbook: terms are sorted, each with a page number you flip to. The clustered index is a dictionary: the entries <em>are</em> the content, in sorted order — you find the word and the definition is right there, no flipping. But a dictionary sorts only one way. To find words by some other property you need a small back-index that gives you the <em>word</em> (the clustering key), which you then look up in the dictionary again — that second lookup is exactly the secondary-index cost.</p>
+      <p>Step through the two lookup paths below: a clustered PK lookup (one descent) versus a secondary-index lookup in a clustered table (descent, then a second PK descent).</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 360" aria-label="Clustered PK lookup vs secondary-index double lookup">
+          <!-- Left column: clustered PK lookup -->
+          <text x="160" y="28" text-anchor="middle" class="diag-title">Clustered PK lookup</text>
+          <text x="160" y="46" text-anchor="middle" class="diag-sub">WHERE id = 3</text>
+
+          <g id="pk-query" class="step-el">
+            <rect x="70" y="60" width="180" height="40" rx="6" class="diag-box query"/>
+            <text x="160" y="85" text-anchor="middle" class="diag-label">Query: id = 3</text>
+          </g>
+          <line x1="160" y1="100" x2="160" y2="130" class="diag-edge"/>
+          <g id="pk-btree" class="step-el">
+            <rect x="70" y="130" width="180" height="44" rx="6" class="diag-box index"/>
+            <text x="160" y="150" text-anchor="middle" class="diag-label">Clustered PK B-tree</text>
+            <text x="160" y="166" text-anchor="middle" class="diag-sub2">descend to leaf</text>
+          </g>
+          <line x1="160" y1="174" x2="160" y2="210" class="diag-edge"/>
+          <g id="pk-row" class="step-el">
+            <rect x="70" y="210" width="180" height="58" rx="6" class="diag-box rowdata"/>
+            <text x="160" y="234" text-anchor="middle" class="diag-label">Leaf = the row</text>
+            <text x="160" y="252" text-anchor="middle" class="diag-sub2">id=3, email, name (no fetch)</text>
+          </g>
+          <text x="160" y="300" text-anchor="middle" class="diag-cost">1 descent · index-only</text>
+
+          <!-- Divider -->
+          <line x1="320" y1="55" x2="320" y2="320" class="diag-divider"/>
+
+          <!-- Right column: secondary double lookup -->
+          <text x="480" y="28" text-anchor="middle" class="diag-title">Secondary-index lookup</text>
+          <text x="480" y="46" text-anchor="middle" class="diag-sub">WHERE email = 'a@x.com'</text>
+
+          <g id="sec-query" class="step-el">
+            <rect x="390" y="60" width="180" height="40" rx="6" class="diag-box query"/>
+            <text x="480" y="85" text-anchor="middle" class="diag-label">Query: email = a@x.com</text>
+          </g>
+          <line x1="480" y1="100" x2="480" y2="124" class="diag-edge"/>
+          <g id="sec-index" class="step-el">
+            <rect x="390" y="124" width="180" height="44" rx="6" class="diag-box index"/>
+            <text x="480" y="144" text-anchor="middle" class="diag-label">Secondary B-tree (email)</text>
+            <text x="480" y="160" text-anchor="middle" class="diag-sub2">leaf stores PK → id=3</text>
+          </g>
+          <line x1="480" y1="168" x2="480" y2="200" class="diag-edge"/>
+          <g id="sec-pkbtree" class="step-el">
+            <rect x="390" y="200" width="180" height="44" rx="6" class="diag-box index"/>
+            <text x="480" y="220" text-anchor="middle" class="diag-label">Clustered PK B-tree</text>
+            <text x="480" y="236" text-anchor="middle" class="diag-sub2">descend again for id=3</text>
+          </g>
+          <line x1="480" y1="244" x2="480" y2="270" class="diag-edge"/>
+          <g id="sec-row" class="step-el">
+            <rect x="390" y="270" width="180" height="34" rx="6" class="diag-box rowdata"/>
+            <text x="480" y="291" text-anchor="middle" class="diag-label">Leaf = the row</text>
+          </g>
+          <text x="480" y="332" text-anchor="middle" class="diag-cost">2 descents per row</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation"></p>
+      </div>
+
+      <p>The structural trade-off in one table — Postgres (heap) versus MySQL InnoDB (clustered on PK):</p>
+      <table class="compare">
+        <thead><tr><th>Property</th><th>Postgres (heap)</th><th>InnoDB (clustered PK)</th></tr></thead>
+        <tbody>
+          <tr><td>PK lookup cost</td><td data-score="55">descent + heap fetch</td><td data-score="95">row in leaf, index-only</td></tr>
+          <tr><td>Secondary lookup</td><td data-score="80">descent + direct TID jump</td><td data-score="50">two B-tree descents</td></tr>
+          <tr><td>Clustering</td><td data-score="45">manual CLUSTER, decays</td><td data-score="90">permanent, auto-maintained</td></tr>
+          <tr><td>Secondary points via</td><td data-score="85">physical TID</td><td data-score="60">the PK (clustering key)</td></tr>
+          <tr><td>Fat PK impact</td><td data-score="80">indexes unaffected</td><td data-score="40">bloats every secondary index</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p><strong>The clustering factor matters even in Postgres.</strong> Postgres never permanently clusters, but each index still has a <em>correlation</em> with the heap's physical order. An index on <code>created_at</code> over an append-only table is well-correlated — consecutive index entries map to physically adjacent rows, so a range scan sweeps a few sequential pages. An index on a random value (UUIDv4) is poorly correlated — consecutive index entries scatter across the heap, so each row is a fresh random page. The planner may even abandon the index and do a Seq Scan.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> Using a random UUIDv4 as a primary key on a high-write or range-scanned table.
+          <pre><code class="lang-sql">-- Random PK: each insert lands at an unpredictable key position.
+CREATE TABLE events (
+  id    UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- UUIDv4 = random
+  ts    TIMESTAMPTZ,
+  payload JSONB
+);
+
+-- A "recent events" range scan:
+SELECT * FROM events WHERE ts &gt; now() - interval '1 hour' ORDER BY ts;</code></pre>
+          <p>Random keys collapse the clustering factor. In a <strong>heap (Postgres)</strong>, the harm isn't where the row lands but that index order no longer correlates with physical order, so range scans do one random I/O per row. In a <strong>clustered table (InnoDB)</strong> it's worse: a random key forces mid-tree inserts, triggering page splits and fragmentation — hurting insert throughput too. Point lookups stay fine; <em>range scans and insert throughput</em> suffer most. Prefer a compact monotonic key: a <code>BIGINT</code> sequence or a time-ordered UUIDv7.</p>
+        </div>
+
+        <p><strong>Don't claim "Postgres tables are clustered on the PK" — it's false.</strong> Postgres is always heap + separate indexes. <code>CLUSTER table USING index</code> rewrites the heap into <em>that index's</em> sorted order as a one-shot operation that is not maintained; ordering decays as rows change, and the command holds an <code>ACCESS EXCLUSIVE</code> lock that blocks all reads and writes — strictly a maintenance-window task. InnoDB, by contrast, keeps PK order permanently and automatically.</p>
+
+        <p><strong>The fat-PK tax in InnoDB.</strong> Because every secondary index stores the clustering key in its leaves, a wide primary key (say, a long string) is duplicated into <em>every</em> secondary index, bloating all of them. This is a concrete reason to keep the InnoDB PK compact and monotonic.</p>
+
+        <p><strong>The practical rule.</strong> A table with a single access path is best as a clustered / index-organized table — every lookup is index-only and range scans are sequential. A table with many access paths is often better as a heap with covering indexes; Postgres's heap model bets that most tables have several access patterns rather than one dominant one.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>A clustered lookup is automatically index-only; covering indexes recreate that benefit for secondary access by carrying payload columns.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes</strong>
+        <span>Both clustered and non-clustered indexes are B-trees — this is the descend-to-leaf structure each lookup walks.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes</strong>
+        <span>Column order and the leftmost-prefix rule shape what a secondary index can satisfy before it has to fall back to the clustering-key lookup.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://en.wikipedia.org/wiki/Database_index" target="_blank" rel="noopener">Wikipedia — Database index</a> — fetched 2026-06-06</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-cluster.html" target="_blank" rel="noopener">PostgreSQL Documentation — CLUSTER</a> — fetched 2026-06-06</li>
+          <li><a href="https://use-the-index-luke.com/sql/clustering/index-organized-clustered-index" target="_blank" rel="noopener">Use The Index, Luke — Index-Organized / Clustered Tables</a> — fetched 2026-06-06</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">What lives in the leaf node of a clustered index versus a non-clustered index?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Both store keys plus a physical pointer to the row.</button>
+            <button class="option" data-correct="true">Clustered: the full row itself. Non-clustered: keys plus a pointer to the row.</button>
+            <button class="option" data-correct="false">Clustered: a pointer to the heap. Non-clustered: the full row.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The clustered index's leaves <em>are</em> the rows (index-organized); a non-clustered index's leaves hold only keys plus a pointer (TID or clustering key) back to the row.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why can a table have many non-clustered indexes but at most one clustered index?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Clustered indexes are too large to have more than one.</button>
+            <button class="option" data-correct="true">A clustered index defines the physical order of the rows, and rows can be stored in only one order.</button>
+            <button class="option" data-correct="false">The database engine arbitrarily limits clustered indexes to one.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Clustering physically sorts the rows. There's only one physical order, so only one clustered index — but you can layer many separate (non-clustered) indexes alongside it.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In InnoDB, why does a secondary index store the PK instead of a physical pointer, and what does that cost on a secondary lookup?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Because the rows live inside the clustered B-tree, their physical positions shift whenever a page splits — a stored physical address would go stale. So the secondary index stores the stable clustering key (the PK) instead. The cost: a secondary lookup is a <strong>double lookup</strong> — descend the secondary index to get the PK, then descend the clustered index again to fetch the row. Two B-tree descents per row, versus a heap's one descent plus a direct TID jump. (And the PK is embedded in every secondary index, so a fat PK bloats them all.)</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Is a Postgres table clustered on its primary key? What does <code>CLUSTER</code> do, and how does it differ from InnoDB?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>No. Postgres is always heap + separate indexes — never permanently clustered. <code>CLUSTER table USING index</code> physically rewrites the heap into that index's sorted order, but it's a <strong>one-time operation that is not maintained</strong>: new and updated rows go to free space, so the ordering decays and you must periodically re-run it. It also takes an <code>ACCESS EXCLUSIVE</code> lock, blocking all reads and writes — a maintenance-window op. InnoDB, by contrast, keeps the rows in PK order permanently and automatically.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why might random UUIDv4 primary keys hurt versus sequential keys, and which operations suffer most?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Random keys collapse the <strong>clustering factor</strong>: consecutive index entries map to scattered physical rows. In a heap (Postgres), index order no longer correlates with physical order, so range scans do a random I/O per row. In a clustered table (InnoDB) it's worse — random keys force mid-tree inserts, causing page splits and fragmentation. The hardest-hit operations are <strong>range scans</strong> (scattered pages) and <strong>insert throughput</strong> in clustered tables; point lookups stay fine. Prefer a compact monotonic key (BIGINT sequence or time-ordered UUIDv7).</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (for animated diagrams) ──────────────
+    const steps = [
+      { activate: ['#pk-query'], explanation: 'Clustered PK lookup — WHERE id = 3. The query targets the clustering key, the one key the table is physically sorted by.' },
+      { activate: ['#pk-btree'], explanation: 'Descend the clustered PK B-tree once to reach the correct leaf node.' },
+      { activate: ['#pk-row'], explanation: 'The leaf IS the row. id, email, and name come back with zero heap fetch — a single descent, automatically index-only. This is why InnoDB PK lookups are maximally fast.' },
+      { activate: ['#sec-query'], explanation: 'Now a secondary-index lookup — WHERE email = a@x.com. email is not the clustering key, so the table is not sorted by it.' },
+      { activate: ['#sec-index'], explanation: 'Descend the secondary B-tree on email. Its leaf cannot store a physical pointer (rows move on page splits), so it stores the clustering key: id = 3.' },
+      { activate: ['#sec-pkbtree'], explanation: 'Take that id = 3 and descend the clustered PK B-tree a SECOND time to locate the actual row.' },
+      { activate: ['#sec-row'], explanation: 'Finally the row is reached — two full B-tree descents per matched row. That double lookup is the inherent cost of secondary indexes on a clustered table.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'covering-indexes': { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+      'btree-indexes':    { title: 'B-tree Indexes', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, ORDER BY for free, and why f(column) defeats the index.' },
+      'composite-indexes':{ title: 'Composite Indexes', summary: 'The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', () => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

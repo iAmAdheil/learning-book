@@ -1,0 +1,390 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Denormalization — Databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← Databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Denormalization — When and Why to Break Normalization Rules</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Denormalization is the <em>deliberate</em>, controlled act of storing the same fact in more than one place — trading write-time work and storage for dramatically faster reads. Normalization makes data <em>correct</em>; denormalization makes a hot read path <em>fast</em>, and the bill comes due as a consistency burden you now own.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">denormalization</span>
+        <span class="badge tag">performance</span>
+        <span class="badge tag">materialized-view</span>
+        <span class="badge tag">read-optimization</span>
+        <span class="badge tag">redundancy</span>
+        <span class="badge tag">triggers</span>
+        <span class="meta-dates">Created 2026-05-31 · Updated 2026-05-31</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Denormalization</dt>
+        <dd>A deliberate engineering decision to re-introduce redundancy into a normalized schema for read speed. An <em>accidental</em> duplicate is a bug; a denormalization is a choice with a known, bounded cost.</dd>
+
+        <dt>Counter column (precomputed aggregate)</dt>
+        <dd>Storing a rolled-up value such as <code>comment_count</code> directly on the row, instead of computing it on every read. Reads become a single column fetch; every write must now also adjust the counter.</dd>
+
+        <dt>Redundant column copy</dt>
+        <dd>Copying an attribute from a parent table (e.g. <code>users.name</code> → <code>posts.author_name</code>) so the read can skip a JOIN. Deliberately reintroduces the <strong>update anomaly</strong>.</dd>
+
+        <dt>Materialized view</dt>
+        <dd>A saved query whose result is physically stored as a real, indexable table. The expensive JOIN+aggregate runs once at refresh — not per read. Goes stale between refreshes.</dd>
+
+        <dt>Consistency burden</dt>
+        <dd>The work of keeping redundant copies in sync. Normalization gave you this for free; denormalization makes it your job — enforced by app code, DB triggers, or batch refresh.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A blog feed needs each post's title, author name, comment count, and like count. From a clean 3NF schema (<code>posts / users / comments / likes</code>), assembling that list forces a JOIN to <code>users</code> plus a correlated subquery that scans <code>comments</code> and <code>likes</code> <em>per post</em>. The data is correct — it is just expensive to re-assemble every time, on a feed served millions of times a day.</p>
+      <pre><code class="lang-sql">-- Normalized: correct but the listing query melts under load
+--   (correlated subqueries scan comments + likes per post)
+SELECT p.title,
+       (SELECT count(*) FROM comments c WHERE c.post_id = p.id) AS comment_count
+FROM posts p ORDER BY p.created_at DESC LIMIT 20;
+
+-- Denormalized: store the count, read it directly
+ALTER TABLE posts ADD COLUMN comment_count INT NOT NULL DEFAULT 0;</code></pre>
+      <p>After the <code>ALTER</code>, the listing read becomes a plain column fetch — no subquery, no per-post scan. The cost did not vanish; it moved. Every comment <code>INSERT</code> must now bump the counter and every <code>DELETE</code> must decrement it, forever. For a DB-managed alternative that covers the whole row, use a materialized view:</p>
+      <pre><code class="lang-sql">CREATE MATERIALIZED VIEW post_stats AS
+SELECT p.id, p.title, u.name AS author_name,
+       count(DISTINCT c.id) AS comment_count,
+       count(DISTINCT l.id) AS like_count
+FROM posts p
+JOIN users u ON u.id = p.author_id
+LEFT JOIN comments c ON c.post_id = p.id
+LEFT JOIN likes l    ON l.post_id = p.id
+GROUP BY p.id, p.title, u.name;
+
+-- Postgres does NOT auto-refresh:
+REFRESH MATERIALIZED VIEW CONCURRENTLY post_stats;  -- 9.4+, needs a UNIQUE index, keeps serving reads</code></pre>
+      <p>The expensive JOIN+aggregate runs once per <code>REFRESH</code> rather than once per read. The <code>CONCURRENTLY</code> variant rebuilds while still serving <code>SELECT</code>s (it requires a UNIQUE index); a plain refresh locks reads out for the duration.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a single dial labelled <strong>"where do I pay?"</strong> Normalization parks the dial fully on the read side: writes are trivially correct, but every read re-derives the answer. Each denormalization technique turns the dial the other way — making reads cheap by pushing cost onto writes, storage, or freshness. There is no free setting; you are only choosing <em>which</em> resource absorbs the cost. The table below scores the four techniques (plus the normalized baseline) on read cost, write cost, consistency guarantee, and staleness. Greener is cheaper / safer.</p>
+
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Approach</th>
+            <th>Read cost</th>
+            <th>Write cost</th>
+            <th>Consistency</th>
+            <th>Staleness</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Normalized (baseline)</td>
+            <td data-score="20">High — JOIN/aggregate every read</td>
+            <td data-score="95">Trivial — write once</td>
+            <td data-score="95">Free — DB guarantees it</td>
+            <td data-score="95">Always live</td>
+          </tr>
+          <tr>
+            <td>Counter column + app code</td>
+            <td data-score="90">Low — single column fetch</td>
+            <td data-score="50">Every writer must remember</td>
+            <td data-score="45">App-enforced — a stray script breaks it</td>
+            <td data-score="90">Fresh (in-txn)</td>
+          </tr>
+          <tr>
+            <td>Counter column + DB trigger</td>
+            <td data-score="90">Low — single column fetch</td>
+            <td data-score="40">Extra write latency per insert</td>
+            <td data-score="85">DB-enforced for all writers</td>
+            <td data-score="90">Fresh</td>
+          </tr>
+          <tr>
+            <td>Materialized view</td>
+            <td data-score="85">Low — reads stored rows</td>
+            <td data-score="70">Refresh runs the heavy query</td>
+            <td data-score="70">Correct as of last refresh</td>
+            <td data-score="30">Stale between refreshes</td>
+          </tr>
+          <tr>
+            <td>Star schema (OLAP)</td>
+            <td data-score="90">Low — flat fact + dimensions</td>
+            <td data-score="55">Bulk ETL load</td>
+            <td data-score="60">Batch-consistent</td>
+            <td data-score="35">Stale to last load</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Read the rows as a single trade restated four ways: every approach that brightens the <em>read</em> column dims at least one of <em>write</em>, <em>consistency</em>, or <em>staleness</em>. That is denormalization in one glance.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p><strong>It is not "normalized vs denormalized."</strong> Real schemas are normalized <em>with surgical denormalizations</em> on specific hot paths. You denormalize a query path, not a database. Denormalization deliberately re-creates the exact anomalies normalization removed — that is the trade, not a contradiction. Anomalies are the cost side of redundancy, sometimes worth paying for the read win.</p>
+
+        <p><strong>Decision framework — denormalize only when all four point the same way:</strong></p>
+        <ol>
+          <li><strong>Measured read bottleneck.</strong> <code>EXPLAIN ANALYZE</code> proves the JOIN/aggregate is the real cost. Premature denormalization is the classic mistake.</li>
+          <li><strong>Read-heavy ratio.</strong> Read often, written rarely. A write-hot table is the <em>worst</em> candidate.</li>
+          <li><strong>Stable data.</strong> The copied value changes rarely, so sync cost stays low.</li>
+          <li><strong>Tolerable staleness</strong> (for view/batch approaches). A like count 30s behind is fine; an account balance is not.</li>
+        </ol>
+        <p>Rule out cheaper fixes first. <strong>Add an index</strong> — often kills the JOIN cost with zero redundancy and zero sync burden; always try this first. Or cache the assembled result <strong>outside the DB</strong> (Redis) rather than restructuring the schema. Denormalization is the tool for when even a well-indexed, well-cached query is still too slow.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> Adding a redundant copy but forgetting a writer. A migration bulk-inserts comments straight into the table without bumping the counter:
+          <pre><code class="lang-sql">-- Bypasses the application's "also increment comment_count" logic
+INSERT INTO comments (post_id, body)
+SELECT post_id, body FROM staging_comments;
+-- posts.comment_count is now WRONG — silently, with no error</code></pre>
+          <p>The column drifts from reality with no exception thrown. This is why app-enforced sync is fragile for multi-writer data: a single stray script corrupts the copy. A DB trigger fires for <em>every</em> writer (including this migration), so it cannot be bypassed — push correctness into the engine, the same lesson as constraints. And remember: Postgres materialized views never refresh themselves, so many "stale data" bugs are just a forgotten <code>REFRESH</code>.</p>
+        </div>
+
+        <p><strong>View vs materialized view, precisely.</strong> A plain view is a saved query recomputed on <em>every</em> access — always live, zero storage, indexable only via its base tables. A materialized view runs the query once and caches the rows on disk — cheap to read, indexable on any column, but stale between refreshes.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../schema-design-normalization/index.html" data-entry="schema-design-normalization">
+        <strong>Schema Design — ER Diagrams &amp; Normalization</strong>
+        <span>The opposite force: normalization removes the anomalies that denormalization deliberately reintroduces.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Queries Use Them</strong>
+        <span>The cheaper fix to try first — an index turns the slow sequential scan into a log-time lookup, often removing the need to denormalize.</span>
+      </a>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>Keys, constraints, and relationships — the foundation whose JOIN cost denormalization is paying to avoid.</span>
+      </a>
+      <a class="related-card" href="../data-models-overview/index.html" data-entry="data-models-overview">
+        <strong>Data Models Overview</strong>
+        <span>Document and columnar models bake denormalization into their shape; useful contrast to the relational trade-off.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://en.wikipedia.org/wiki/Denormalization" target="_blank" rel="noopener">Wikipedia — Denormalization</a></li>
+          <li><a href="https://en.wikipedia.org/wiki/Materialized_view" target="_blank" rel="noopener">Wikipedia — Materialized view</a></li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">You add a <code>comment_count</code> column to <code>posts</code>. Which anomaly have you deliberately reintroduced?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Insertion anomaly</button>
+            <button class="option" data-correct="true">Update anomaly</button>
+            <button class="option" data-correct="false">Deletion anomaly</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The true count now lives in two places, so any change to the comments must be propagated to the copy — the classic update anomaly. You manage it with a transaction that updates both, or a DB trigger.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In terms of <em>when</em> the query runs, what is the difference between a view and a materialized view?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Both run the query once at creation and cache the result.</button>
+            <button class="option" data-correct="true">A view re-runs the query on every access (always live); a materialized view runs it at create/refresh and serves cached rows (stale between).</button>
+            <button class="option" data-correct="false">A view caches rows on disk; a materialized view is purely virtual.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A view is a saved query recomputed every time; a materialized view stores the result and only updates on REFRESH — cheap reads, but stale until refreshed.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Before denormalizing a slow JOIN, what cheaper fix should you try first — and why might it eliminate the need entirely?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Add an index. The JOIN/subquery was often expensive <em>only</em> because of a missing index forcing a sequential scan of the child table. An index on <code>comments(post_id)</code> turns "find comments for post 42" into a log-time lookup. The original normalized query may then be fast enough — giving the read win with zero redundancy and zero write/sync burden. An external (Redis) cache is the other cheap fix: it moves load off the DB without restructuring the schema.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A nightly batch refresh is fine for a homepage "trending posts" count but not for a user's account balance. Why?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>"Trending" is a soft metric — staleness is tolerable, and a value a few hours behind harms nothing. An account balance is a hard invariant: stale means <em>wrong</em>, which erodes trust and can permit bad transactions. Batch/stale approaches are only acceptable when the consumer can tolerate the freshness gap. Give two more reasons a table is a poor denormalization candidate: it is frequently written/updated (write-hot), or its data churns constantly so the copy can never stay in sync cheaply.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(paintCell);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function paintCell(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(paintCell);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (unused for this entry) ──────────────
+    const steps = [];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'schema-design-normalization': { title: 'Schema Design — ER Diagrams & Normalization (1NF → BCNF)', summary: 'ER modeling and normalization 1NF→BCNF via functional dependencies and the three anomalies.' },
+      'btree-indexes':               { title: 'B-tree Indexes — Structure & How Range/Equality Queries Use Them', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, and why f(column) defeats the index.' },
+      'relational-data-model':       { title: 'Relational Data Model', summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.' },
+      'data-models-overview':        { title: 'Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph', summary: 'The five data models, how to pick by access pattern, and what Mongoose populate / $lookup really do.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', () => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

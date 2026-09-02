@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Learning Book — All Topics</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="assets/style.css" />
+  <script>
+    const ENTRIES = [{"id":"databases/relational-data-model","title":"Relational Data Model","topic":"databases","slug":"relational-data-model","tags":["relational-model","keys","constraints","schema-design","foreign-keys","primary-key","normalization","fundamentals"],"summary":"Tables as sets of tuples; keys (super/candidate/primary/foreign), constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.","path":"databases/entries/relational-data-model/index.html","bloom":"some","created":"2026-05-29","updated":"2026-05-29"},{"id":"databases/data-models-overview","title":"Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph","topic":"databases","slug":"data-models-overview","tags":["data-models","nosql","document","key-value","columnar","graph","mongodb","polyglot-persistence","fundamentals","system-design"],"summary":"The five data models, how to pick by access pattern, relational-vs-document decision tests, and what Mongoose populate / $lookup really do.","path":"databases/entries/data-models-overview/index.html","bloom":"some","created":"2026-05-29","updated":"2026-05-29"},{"id":"databases/schema-design-normalization","title":"Schema Design — ER Diagrams & Normalization (1NF → BCNF)","topic":"databases","slug":"schema-design-normalization","tags":["schema-design","normalization","er-diagram","1nf","2nf","3nf","bcnf","functional-dependency","anomalies","fundamentals"],"summary":"ER modeling and normalization 1NF→BCNF: functional dependencies, partial/transitive dependencies, the three anomalies, and BCNF's edge case.","path":"databases/entries/schema-design-normalization/index.html","bloom":"some","created":"2026-05-31","updated":"2026-05-31"},{"id":"databases/denormalization","title":"Denormalization — When and Why to Break Normalization Rules","topic":"databases","slug":"denormalization","tags":["denormalization","performance","materialized-view","read-optimization","redundancy","counter-cache","triggers","anomalies","system-design"],"summary":"Trading write complexity for read speed: counter columns, redundant copies, materialized views, consistency strategies, and the decision framework.","path":"databases/entries/denormalization/index.html","bloom":"some","created":"2026-05-31","updated":"2026-05-31"},{"id":"databases/btree-indexes","title":"B-tree Indexes — Structure & How Range/Equality Queries Use Them","topic":"databases","slug":"btree-indexes","tags":["indexes","b-tree","b+tree","query-performance","sequential-scan","range-query","expression-index","disk-io","interview-priority"],"summary":"How a B-tree turns O(n) scans into O(log n) on-disk lookups; equality vs range traversal, ORDER BY for free, write tax, and why f(column) defeats the index.","path":"databases/entries/btree-indexes/index.html","bloom":"some","created":"2026-05-31","updated":"2026-05-31"},{"id":"databases/composite-indexes","title":"Composite Indexes — Column Order & the Leftmost-Prefix Rule","topic":"databases","slug":"composite-indexes","tags":["indexes","composite-index","multicolumn-index","leftmost-prefix","column-order","equality-before-range","selectivity","bitmap-scan","skip-scan","interview-priority"],"summary":"The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.","path":"databases/entries/composite-indexes/index.html","bloom":"some","created":"2026-06-03","updated":"2026-06-03"},{"id":"databases/covering-indexes","title":"Covering Indexes & Index-Only Scans","topic":"databases","slug":"covering-indexes","tags":["indexes","covering-index","index-only-scan","include-clause","heap-fetch","visibility-map","mvcc","payload-columns","interview-priority"],"summary":"Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres's visibility map / MVCC can still force heap access.","path":"databases/entries/covering-indexes/index.html","bloom":"some","created":"2026-06-03","updated":"2026-06-03"},{"id":"databases/clustered-vs-nonclustered-indexes","title":"Clustered vs Non-clustered Indexes","topic":"databases","slug":"clustered-vs-nonclustered-indexes","tags":["indexes","clustered-index","non-clustered-index","secondary-index","index-organized-table","heap","clustering-factor","innodb","postgres-cluster","uuid","interview-priority"],"summary":"Rows-in-the-leaf vs pointer-to-heap; the secondary-index double-lookup, Postgres CLUSTER (one-time, decays) vs InnoDB permanent PK clustering, and the clustering factor.","path":"databases/entries/clustered-vs-nonclustered-indexes/index.html","bloom":"some","created":"2026-06-06","updated":"2026-06-06"},{"id":"databases/partial-and-expression-indexes","title":"Partial & Expression Indexes","topic":"databases","slug":"partial-and-expression-indexes","tags":["indexes","partial-index","expression-index","functional-index","unique-constraint","soft-delete","case-insensitive","write-tax","interview-priority"],"summary":"Index a subset of rows (partial) or a transformed value (expression); partial UNIQUE for scoped constraints, case-insensitive uniqueness, and combining both.","path":"databases/entries/partial-and-expression-indexes/index.html","bloom":"some","created":"2026-06-06","updated":"2026-06-06"},{"id":"databases/acid-properties","title":"ACID Properties","topic":"databases","slug":"acid-properties","tags":["transactions","acid","atomicity","consistency","isolation","durability","wal","write-ahead-log","mvcc","savepoint","commit","rollback","serializability","interview-priority"],"summary":"The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the application's job, isolation as a tunable dial, and the wedding-ceremony model.","path":"databases/entries/acid-properties/index.html","bloom":"some","created":"2026-06-10","updated":"2026-06-10"},{"id":"databases/isolation-levels","title":"Isolation Levels & Read Anomalies","topic":"databases","slug":"isolation-levels","tags":["transactions","isolation-levels","read-uncommitted","read-committed","repeatable-read","serializable","dirty-read","non-repeatable-read","phantom-read","write-skew","serialization-anomaly","mvcc","snapshot-isolation","ssi","predicate-locks","40001","interview-priority"],"summary":"The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.","path":"databases/entries/isolation-levels/index.html","bloom":"some","created":"2026-06-10","updated":"2026-06-10"},{"id":"databases/two-phase-locking","title":"Two-Phase Locking (2PL)","topic":"databases","slug":"two-phase-locking","tags":["transactions","two-phase-locking","2pl","strict-2pl","ss2pl","conservative-2pl","shared-lock","exclusive-lock","lock-compatibility","lock-point","serializability","pessimistic-concurrency","cascading-aborts","lock-upgrade","mvcc","interview-priority"],"summary":"The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres's MVCC+strict-2PL hybrid.","path":"databases/entries/two-phase-locking/index.html","bloom":"some","created":"2026-06-12","updated":"2026-06-12"},{"id":"databases/deadlocks","title":"Deadlocks — Detection, Prevention & the Coffman Conditions","topic":"databases","slug":"deadlocks","tags":["transactions","deadlock","coffman-conditions","mutual-exclusion","hold-and-wait","no-preemption","circular-wait","wait-for-graph","deadlock-detection","deadlock-timeout","40P01","lock-ordering","livelock","conservative-2pl","interview-priority"],"summary":"The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.","path":"databases/entries/deadlocks/index.html","bloom":"some","created":"2026-06-15","updated":"2026-06-15"},{"id":"databases/heap-storage-layout","title":"How Data Is Stored on Disk — Heap Files, Pages & Slots","topic":"databases","slug":"heap-storage-layout","tags":["storage","heap-file","page","block","8kb-page","line-pointer","slot","item-pointer","tuple","ctid","tid","relfilenode","fork","free-space-map","visibility-map","toast","segment","torn-page","full-page-write","indirection","interview-priority"],"summary":"Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.","path":"databases/entries/heap-storage-layout/index.html","bloom":"some","created":"2026-06-17","updated":"2026-06-17"},{"id":"databases/mvcc","title":"MVCC — How Postgres Implements Multi-Version Concurrency Control","topic":"databases","slug":"mvcc","tags":["mvcc","multi-version","xmin","xmax","cmin","cmax","t_ctid","version-chain","snapshot","xip-list","visibility-check","commit-log","clog","pg_xact","hint-bits","t_infomask","hot-update","heap-only-tuple","lp-redirect","dead-tuple","oldest-xmin","xmin-horizon","snapshot-isolation","interview-priority"],"summary":"Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.","path":"databases/entries/mvcc/index.html","bloom":"some","created":"2026-06-17","updated":"2026-06-30"},{"id":"databases/table-bloat-and-autovacuum","title":"Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind","topic":"databases","slug":"table-bloat-and-autovacuum","tags":["vacuum","autovacuum","table-bloat","dead-tuple","vacuum-full","pg-repack","free-space-map","visibility-map","all-visible","all-frozen","freezing","xid-wraparound","relfrozenxid","oldest-xmin","anti-wraparound","replication-slot","reindex","planner-statistics","analyze","interview-priority"],"summary":"Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM's two bits, freezing & XID wraparound, and autovacuum triggers/tuning.","path":"databases/entries/table-bloat-and-autovacuum/index.html","bloom":"some","created":"2026-06-17","updated":"2026-06-30"},{"id":"databases/write-ahead-log","title":"Write-Ahead Log (WAL) — Crash Recovery & the Durability Guarantee","topic":"databases","slug":"write-ahead-log","tags":["wal","write-ahead-log","durability","crash-recovery","redo","lsn","pd_lsn","checkpoint","redo-point","full-page-write","backup-block","torn-page","synchronous-commit","wal-level","pitr","replication","replication-slot","group-commit","idempotent-recovery","interview-priority"],"summary":"Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints & redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.","path":"databases/entries/write-ahead-log/index.html","bloom":"some","created":"2026-06-30","updated":"2026-06-30"},{"id":"databases/buffer-pool","title":"Buffer Pool / Page Cache — How a DB Manages Memory","topic":"databases","slug":"buffer-pool","tags":["buffer-pool","shared-buffers","page-cache","buffer-manager","buffer-tag","buffer-descriptor","clock-sweep","usage-count","pin","refcount","eviction","dirty-page","bgwriter","checkpointer","ring-buffer","buffer-access-strategy","double-buffering","effective-cache-size","work-mem","pg-buffercache","interview-priority"],"summary":"8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.","path":"databases/entries/buffer-pool/index.html","bloom":"some","created":"2026-06-30","updated":"2026-06-30"},{"id":"networks/how-internet-works","title":"How the Internet Works End-to-End — A Packet's Journey","topic":"networks","slug":"how-internet-works","tags":["fundamentals","dns","tcp","udp","ip","routing","arp","encapsulation"],"summary":"A packet's full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.","path":"networks/entries/how-internet-works/index.html","bloom":"some","created":"2026-07-07","updated":"2026-07-07"},{"id":"networks/osi-model","title":"OSI 7-Layer Model — What Each Layer Does and Why the Split Exists","topic":"networks","slug":"osi-model","tags":["fundamentals","osi-model","layering","switch","router","layer-2","layer-3","encapsulation","mac","ip"],"summary":"The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.","path":"networks/entries/osi-model/index.html","bloom":"some","created":"2026-07-07","updated":"2026-07-07"},{"id":"networks/tcp-ip-model","title":"TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI","topic":"networks","slug":"tcp-ip-model","tags":["fundamentals","tcp-ip-model","osi-model","layering","hourglass","narrow-waist","ip","sockets","tls"],"summary":"The real stack the internet runs on: 4- vs 5-layer, the OSI→TCP/IP mapping, where TLS/sockets sit, and the hourglass/narrow-waist model.","path":"networks/entries/tcp-ip-model/index.html","bloom":"some","created":"2026-07-07","updated":"2026-07-07"},{"id":"networks/encapsulation-decapsulation","title":"Encapsulation & Decapsulation — Segments → Packets → Frames → Bits","topic":"networks","slug":"encapsulation-decapsulation","tags":["fundamentals","encapsulation","decapsulation","pdu","headers","demultiplexing","mtu","ethertype","ttl","mac","ip"],"summary":"Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.","path":"networks/entries/encapsulation-decapsulation/index.html","bloom":"some","created":"2026-07-07","updated":"2026-07-07"},{"id":"networks/bandwidth-throughput-latency-jitter","title":"Bandwidth vs Throughput vs Latency vs Jitter","topic":"networks","slug":"bandwidth-throughput-latency-jitter","tags":["fundamentals","performance","bandwidth","throughput","latency","jitter","rtt","bandwidth-delay-product","cdn","qos"],"summary":"The four performance words precisely: rates vs times, the highway model, bandwidth≠speed, latency-bound vs bandwidth-bound, BDP, and jitter/QoS.","path":"networks/entries/bandwidth-throughput-latency-jitter/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"},{"id":"networks/ethernet","title":"Ethernet — Frame Format, MAC Addresses & EtherType","topic":"networks","slug":"ethernet","tags":["layer-2","ethernet","mac-address","frame","ethertype","fcs","mtu","csma-cd","broadcast","oui"],"summary":"The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.","path":"networks/entries/ethernet/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"},{"id":"networks/how-switches-work","title":"How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter","topic":"networks","slug":"how-switches-work","tags":["layer-2","switch","cam-table","mac-address-table","mac-learning","flooding","broadcast-domain","collision-domain","port-security","cam-overflow"],"summary":"Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.","path":"networks/entries/how-switches-work/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"},{"id":"networks/vlans","title":"VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging","topic":"networks","slug":"vlans","tags":["layer-2","vlan","802.1q","tagging","access-port","trunk-port","native-vlan","broadcast-domain","segmentation","vlan-hopping","inter-vlan-routing"],"summary":"Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.","path":"networks/entries/vlans/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"},{"id":"networks/spanning-tree-protocol","title":"Spanning Tree Protocol (STP/RSTP) — Loop Prevention & Root Bridge Election","topic":"networks","slug":"spanning-tree-protocol","tags":["layer-2","stp","rstp","spanning-tree","loop-prevention","root-bridge","bpdu","broadcast-storm","bridge-id","portfast","bpdu-guard"],"summary":"Why L2 loops are fatal (no TTL → broadcast storm) and how STP blocks them: root-bridge election, root/designated/blocking ports, path cost, and RSTP's fast convergence.","path":"networks/entries/spanning-tree-protocol/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"},{"id":"networks/arp","title":"ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP","topic":"networks","slug":"arp","tags":["layer-2","arp","address-resolution","arp-cache","gratuitous-arp","arp-spoofing","mitm","broadcast","ndp","next-hop","default-gateway"],"summary":"The glue between IP and MAC: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous ARP for failover, and why ARP spoofing enables MITM.","path":"networks/entries/arp/index.html","bloom":"some","created":"2026-07-12","updated":"2026-07-12"}];
+  </script>
+</head>
+<body>
+  <header class="landing-header global-header">
+    <h1>Learning Book</h1>
+    <p class="subtitle">28 entries across 2 topics</p>
+    <div class="controls">
+      <input class="search" type="search" id="global-search"
+             placeholder="Search all topics…" aria-label="Search all topics"
+             accesskey="/" />
+      <div class="topic-filter" role="group" aria-label="Filter by topic">
+        <button class="topic-chip" data-topic="databases">databases</button>
+        <button class="topic-chip" data-topic="networks">networks</button>
+      </div>
+      <div class="tag-filter" role="group" aria-label="Filter by tag">
+        <button class="tag-chip" data-tag="interview-priority">interview-priority</button>
+        <button class="tag-chip" data-tag="fundamentals">fundamentals</button>
+        <button class="tag-chip" data-tag="layer-2">layer-2</button>
+        <button class="tag-chip" data-tag="indexes">indexes</button>
+        <button class="tag-chip" data-tag="mvcc">mvcc</button>
+        <button class="tag-chip" data-tag="ip">ip</button>
+        <button class="tag-chip" data-tag="transactions">transactions</button>
+        <button class="tag-chip" data-tag="encapsulation">encapsulation</button>
+        <button class="tag-chip" data-tag="visibility-map">visibility-map</button>
+        <button class="tag-chip" data-tag="anomalies">anomalies</button>
+        <button class="tag-chip" data-tag="arp">arp</button>
+        <button class="tag-chip" data-tag="broadcast">broadcast</button>
+        <button class="tag-chip" data-tag="broadcast-domain">broadcast-domain</button>
+        <button class="tag-chip" data-tag="conservative-2pl">conservative-2pl</button>
+        <button class="tag-chip" data-tag="dead-tuple">dead-tuple</button>
+        <button class="tag-chip" data-tag="durability">durability</button>
+        <button class="tag-chip" data-tag="ethertype">ethertype</button>
+        <button class="tag-chip" data-tag="expression-index">expression-index</button>
+        <button class="tag-chip" data-tag="free-space-map">free-space-map</button>
+        <button class="tag-chip" data-tag="full-page-write">full-page-write</button>
+        <button class="tag-chip" data-tag="layering">layering</button>
+        <button class="tag-chip" data-tag="mac">mac</button>
+        <button class="tag-chip" data-tag="mtu">mtu</button>
+        <button class="tag-chip" data-tag="normalization">normalization</button>
+        <button class="tag-chip" data-tag="oldest-xmin">oldest-xmin</button>
+        <button class="tag-chip" data-tag="osi-model">osi-model</button>
+        <button class="tag-chip" data-tag="performance">performance</button>
+        <button class="tag-chip" data-tag="replication-slot">replication-slot</button>
+        <button class="tag-chip" data-tag="schema-design">schema-design</button>
+        <button class="tag-chip" data-tag="serializability">serializability</button>
+        <button class="tag-chip" data-tag="snapshot-isolation">snapshot-isolation</button>
+        <button class="tag-chip" data-tag="switch">switch</button>
+        <button class="tag-chip" data-tag="system-design">system-design</button>
+        <button class="tag-chip" data-tag="torn-page">torn-page</button>
+        <button class="tag-chip" data-tag="wal">wal</button>
+        <button class="tag-chip" data-tag="write-ahead-log">write-ahead-log</button>
+        <button class="tag-chip clear" data-tag="">clear tags</button>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main id="global-grid" class="entries-grid"></main>
+
+  <script>
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    const stopWords = new Set(['the','a','an','is','in','of','to','and','or','for','with','that','this','it','on','at','by','are','was','be','as','from','have']);
+    function tokenize(str) {
+      return (str || '').toLowerCase().replace(/[^\w\s]/g, ' ').split(/\s+/).filter(w => w.length > 2 && !stopWords.has(w));
+    }
+
+    const index = {};
+    const byId = {};
+    ENTRIES.forEach(entry => {
+      byId[entry.id] = entry;
+      tokenize(entry.title + ' ' + entry.summary + ' ' + entry.tags.join(' ')).forEach(word => {
+        if (!index[word]) index[word] = new Set();
+        index[word].add(entry.id);
+      });
+    });
+
+    function search(query) {
+      const terms = tokenize(query);
+      if (!terms.length) return ENTRIES;
+      let results = new Set(index[terms[0]] || []);
+      terms.slice(1).forEach(t => {
+        const m = index[t] || new Set();
+        results = new Set([...results].filter(id => m.has(id)));
+      });
+      return [...results].map(id => byId[id]);
+    }
+
+    const grid = document.getElementById('global-grid');
+    let activeTopic = '';
+    const activeTags = new Set();
+
+    function bloomLabel(l) { return l === 'none' ? 'Beginner' : l === 'some' ? 'Intermediate' : 'Advanced'; }
+    function esc(s) { return String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c]); }
+
+    function renderCards(entries) {
+      grid.innerHTML = '';
+      if (!entries.length) {
+        grid.innerHTML = '<p class="empty-state">No entries match. Try a different search or clear filters.</p>';
+        return;
+      }
+      entries.forEach(en => {
+        const a = document.createElement('a');
+        a.className = 'entry-card';
+        a.href = en.path;
+        a.innerHTML = `
+          <h2 class="entry-title">${esc(en.title)}</h2>
+          <p class="entry-desc">${esc(en.summary)}</p>
+          <div class="entry-meta">
+            <span class="topic-badge">${esc(en.topic)}</span>
+            ${en.bloom ? `<span class="bloom-badge bloom-${en.bloom}">${bloomLabel(en.bloom)}</span>` : ''}
+            ${en.tags.map(t => `<span class="badge tag">${esc(t)}</span>`).join('')}
+            <span class="meta-dates">${esc(en.updated)}</span>
+          </div>`;
+        grid.appendChild(a);
+      });
+    }
+
+    function apply() {
+      const q = document.getElementById('global-search').value.trim();
+      let results = search(q);
+      if (activeTopic) results = results.filter(en => en.topic === activeTopic);
+      if (activeTags.size) results = results.filter(en => [...activeTags].every(t => en.tags.includes(t)));
+      results.sort((a, b) => b.updated.localeCompare(a.updated));
+      renderCards(results);
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (activeTopic) params.set('topic', activeTopic);
+      if (activeTags.size) params.set('tags', [...activeTags].join(','));
+      history.replaceState(null, '', params.toString() ? '?' + params : location.pathname);
+    }
+
+    document.getElementById('global-search').addEventListener('input', function() {
+      clearTimeout(this._t); this._t = setTimeout(apply, 150);
+    });
+
+    document.addEventListener('keydown', ev => {
+      const box = document.getElementById('global-search');
+      if ((ev.key === '/' || (ev.ctrlKey && ev.key === 'k')) && document.activeElement !== box) {
+        ev.preventDefault();
+        box.focus();
+      }
+    });
+
+    document.querySelectorAll('.topic-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        activeTopic = activeTopic === chip.dataset.topic ? '' : chip.dataset.topic;
+        document.querySelectorAll('.topic-chip').forEach(c => c.classList.toggle('active', c.dataset.topic === activeTopic));
+        apply();
+      });
+    });
+
+    document.querySelectorAll('.tag-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const tag = chip.dataset.tag;
+        if (!tag) { activeTags.clear(); document.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active')); }
+        else { activeTags.has(tag) ? activeTags.delete(tag) : activeTags.add(tag); chip.classList.toggle('active'); }
+        apply();
+      });
+    });
+
+    const params = new URLSearchParams(location.search);
+    if (params.get('q')) document.getElementById('global-search').value = params.get('q');
+    if (params.get('topic')) { activeTopic = params.get('topic'); document.querySelector(`.topic-chip[data-topic="${activeTopic}"]`)?.classList.add('active'); }
+    if (params.get('tags')) params.get('tags').split(',').forEach(t => { activeTags.add(t); document.querySelector(`.tag-chip[data-tag="${t}"]`)?.classList.add('active'); });
+
+    apply();
+  </script>
+</body>
+</html>

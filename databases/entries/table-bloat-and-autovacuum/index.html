@@ -1,0 +1,525 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* diag-* SVG vocabulary shim — maps to the same theme-aware CSS vars style.css uses for .node-*/.edge-* */
+    .diagram-svg .diag-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .diag-box, .diagram-svg .diag-box.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diag-box-warn { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .diagram-svg .diag-box-result { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-box-cover { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diagram-label { fill: var(--text); font-family: var(--font); font-size: 13px; }
+    .diagram-svg .diagram-sub { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .diag-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .diagram-svg .step-el.active .diag-edge, .diagram-svg .diag-edge.active { stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-edge-warn { stroke: var(--accent); stroke-dasharray: 4 3; fill: none; }
+    .diagram-svg .diag-warn-text { fill: var(--accent); font-weight: 600; }
+    .diagram-svg .diag-skip-text { fill: var(--text-muted); }
+    .diagram-svg .diag-divider { stroke: var(--border); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Because MVCC never erases a row in place — a DELETE stamps <code>xmax</code>, an UPDATE writes a whole new version — every table steadily fills with <strong>dead tuples</strong>: old versions no living snapshot can see. That accumulated dead space is <strong>bloat</strong>; <strong>VACUUM</strong> is the garbage collector that makes it reusable; <strong>autovacuum</strong> is the daemon that runs VACUUM before the table drowns. The keystone trap: plain VACUUM does <em>not</em> return space to the OS — it makes dead space <em>reusable</em> by future rows. That single fact explains most "why is my table still huge after I vacuumed?" confusion.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">vacuum</span>
+        <span class="badge tag">autovacuum</span>
+        <span class="badge tag">table-bloat</span>
+        <span class="badge tag">dead-tuple</span>
+        <span class="badge tag">vacuum-full</span>
+        <span class="badge tag">pg-repack</span>
+        <span class="badge tag">visibility-map</span>
+        <span class="badge tag">freezing</span>
+        <span class="badge tag">xid-wraparound</span>
+        <span class="badge tag">oldest-xmin</span>
+        <span class="badge tag">anti-wraparound</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-06-17 · Updated 2026-06-30</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Dead tuple</dt>
+        <dd>An old row version whose deleting transaction has committed <em>and</em> sits below the <code>OldestXmin</code> horizon, so no live snapshot can ever see it again. A dead tuple is only <em>removable</em> when its <code>xmax</code> committed and <code>xmax &lt; OldestXmin</code>. Accumulated dead tuples plus internal free space inside pages are what "bloat" means.</dd>
+
+        <dt>Plain VACUUM vs VACUUM FULL</dt>
+        <dd><strong>Plain VACUUM</strong> marks dead space <em>reusable</em> and records it in the FSM under a lightweight <code>SHARE UPDATE EXCLUSIVE</code> lock — the file does <em>not</em> shrink (it can only truncate trailing empty pages). <strong>VACUUM FULL</strong> rewrites the entire table into a new file with zero dead space and hands the space back to the OS, but takes an <code>ACCESS EXCLUSIVE</code> lock that blocks everything and needs ~2× the disk.</dd>
+
+        <dt>Free Space Map (FSM)</dt>
+        <dd>A per-relation fork that tracks how much free space each page has. When VACUUM reclaims dead tuples it records the freed room in the FSM so future INSERTs/UPDATEs refill those gaps instead of extending the file. This is <em>why</em> reused space beats file growth — and why a vacuumed file stays the same size.</dd>
+
+        <dt>Visibility map (VM) — all-visible / all-frozen</dt>
+        <dd>The <code>_vm</code> fork stores <strong>two bits per page</strong>. The <strong>all-visible</strong> bit powers index-only scans and lets normal VACUUM skip the page. The <strong>all-frozen</strong> bit lets even an aggressive / anti-wraparound VACUUM skip the page — the freeze scan is the expensive one, so this is what keeps wraparound vacuums affordable on huge cold tables.</dd>
+
+        <dt>Freezing / XID wraparound</dt>
+        <dd><code>xmin</code>/<code>xmax</code> are 32-bit and compared <em>modulo</em> 2³² — a circle with no endpoint. If an old tuple is never handled, once its age exceeds ~2³¹ its insert flips from past to <em>future</em> and silently disappears. <strong>Freezing</strong> escapes the circle: VACUUM stamps sufficiently-old tuples <code>HEAP_XMIN_FROZEN</code> = "older than every normal XID, forever."</dd>
+
+        <dt>OldestXmin</dt>
+        <dd>The visibility horizon: the oldest transaction ID any snapshot could still need. VACUUM can only reclaim a dead tuple whose <code>xmax &lt; OldestXmin</code>. A single long-open transaction, orphaned replication slot, or stuck prepared transaction pins this horizon low — and then VACUUM runs but reclaims nothing.</dd>
+
+        <dt>Autovacuum</dt>
+        <dd>A background <em>launcher</em> that spawns <em>workers</em> to run VACUUM and ANALYZE automatically. It fires when dead tuples cross a per-table threshold and also refreshes planner statistics, so tables get vacuumed before bloat runs away — without an operator pulling the trigger.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Two catalog queries diagnose almost every bloat-and-wraparound problem. The first ranks tables by dead-tuple load; the second reads the wraparound "fuel gauge" for every database:</p>
+      <pre><code class="lang-sql">SELECT relname, n_dead_tup, n_live_tup, last_autovacuum
+FROM pg_stat_user_tables ORDER BY n_dead_tup DESC;
+
+SELECT datname, age(datfrozenxid) FROM pg_database;  -- wraparound fuel gauge</code></pre>
+      <p>A high <code>n_dead_tup</code> with a recent <code>last_autovacuum</code> is the classic paradox: autovacuum <em>is</em> running yet the table keeps bloating. The usual root cause is a pinned-low <code>OldestXmin</code> — a long-open transaction, an orphaned replication slot (<code>pg_replication_slots.xmin</code>), or a stuck prepared transaction (<code>pg_prepared_xacts</code>) — so every dead tuple fails the <code>xmax &lt; OldestXmin</code> test and nothing is removable. A large and climbing <code>age(datfrozenxid)</code> is the wraparound warning long before Postgres starts refusing writes.</p>
+
+      <p>The second decision is <em>which</em> tool to reach for when a table has already bloated. The choice hinges on one question — do you need the disk back, and can you afford a lock?</p>
+      <pre><code class="lang-sql">-- Routine, frequent: reusable space, reads &amp; writes keep flowing.
+VACUUM events;              -- file size unchanged; FSM updated
+
+-- Emergency only: rewrites the whole table into a new file.
+VACUUM FULL events;         -- ACCESS EXCLUSIVE lock → blocks everything, ~2× disk
+
+-- Production shrink-job: rebuilds table + indexes with only a brief lock.
+pg_repack -t events -d mydb -- no outage</code></pre>
+      <p>The doctrine: run plain VACUUM often enough to never need VACUUM FULL. When a shrink is genuinely required in production, the answer is almost always <code>pg_repack</code> — VACUUM FULL's exclusive lock is an outage, not a maintenance window. Tune a hot, big table to vacuum sooner with a per-table override:</p>
+      <pre><code class="lang-sql">ALTER TABLE events SET (autovacuum_vacuum_scale_factor = 0.02);
+-- default 0.1 → a 1M-row table waits ~100,050 dead tuples before autovacuum;
+-- 0.02 fires it roughly 5× sooner.</code></pre>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a <strong>library that never discards old editions</strong>. When a book is revised, its old edition is not burned — just stamped "withdrawn" on the spine (that is <code>xmax</code>; the dead tuple). <strong>VACUUM is the nightly round:</strong> the librarian pulls withdrawn editions and, instead of demolishing shelving, jots each newly empty slot on an index card at the front desk (the <strong>FSM</strong>) so tomorrow's arrivals refill the gaps. The building never shrinks — only relocating every kept book into a fresh, smaller building (<strong>VACUUM FULL</strong>) does that, and the library must lock its doors while it happens. And she can never clear a withdrawn edition early, because one scholar dozing with an hours-old ticket (the pinned <code>OldestXmin</code>) might still ask for it.</p>
+
+      <h3>Which shrink tool? A heatmap comparison</h3>
+      <p>The three garbage-collection tools trade off along four axes. Greener is the friendlier choice on that dimension; redder is the cost you pay. Toggle the theme to recolor.</p>
+      <div style="overflow-x:auto;">
+        <table class="compare">
+          <thead>
+            <tr>
+              <th>Dimension</th>
+              <th>plain <code>VACUUM</code></th>
+              <th><code>VACUUM FULL</code></th>
+              <th><code>pg_repack</code></th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Returns space to OS</td>
+              <td data-score="20"><strong>No</strong> — reusable only (truncates trailing empty pages)</td>
+              <td data-score="90"><strong>Yes</strong> — old file dropped</td>
+              <td data-score="90"><strong>Yes</strong> — rebuilt into a fresh file</td>
+            </tr>
+            <tr>
+              <td>Lock level / blocking</td>
+              <td data-score="88"><code>SHARE UPDATE EXCLUSIVE</code> — reads &amp; writes proceed</td>
+              <td data-score="12"><code>ACCESS EXCLUSIVE</code> — blocks everything (an outage)</td>
+              <td data-score="70">brief lock only — no outage</td>
+            </tr>
+            <tr>
+              <td>Speed / cost</td>
+              <td data-score="82">routine, cheap, frequent</td>
+              <td data-score="22">full rewrite, slow, ~2× disk</td>
+              <td data-score="55">online rebuild — more work, no downtime</td>
+            </tr>
+            <tr>
+              <td>relfilenode rewrite</td>
+              <td data-score="85">unchanged — no rewrite</td>
+              <td data-score="20">new file → rewrite op, needs ~2× disk</td>
+              <td data-score="48">new file, but built online</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>What plain VACUUM actually does to a page</h3>
+      <p>Step through one heap page as VACUUM cleans it. Watch that the line pointers of removed tuples become <code>LP_UNUSED</code> rather than disappearing, the freed room is recorded in the FSM, the visibility map bit is set — and the file still does not shrink.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 660 380" aria-label="A heap page being vacuumed: dead tuples reclaimed, line pointers marked LP_UNUSED, FSM and visibility map updated, file size unchanged">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="30" y="30" class="diagram-label" font-weight="700">Heap page (8 KB)</text>
+          <rect x="30" y="45" width="360" height="300" rx="10" class="diag-box" fill="none" />
+
+          <!-- Line pointers column -->
+          <text x="55" y="72" class="diagram-sub">Line pointers</text>
+          <text x="255" y="72" class="diagram-sub">Tuple bodies</text>
+
+          <!-- Slot 1 (live) -->
+          <g id="lp1" class="step-el">
+            <rect x="50" y="82" width="90" height="34" rx="6" class="diag-box" />
+            <text x="95" y="103" text-anchor="middle" class="diagram-sub">lp1 → live</text>
+          </g>
+          <line id="e1" class="step-el diag-edge" x1="140" y1="99" x2="245" y2="99" marker-end="url(#arrow)" />
+          <g id="t1" class="step-el">
+            <rect x="250" y="82" width="120" height="34" rx="6" class="diag-box" />
+            <text x="310" y="103" text-anchor="middle" class="diagram-sub">tuple (live)</text>
+          </g>
+
+          <!-- Slot 2 (dead) -->
+          <g id="lp2" class="step-el">
+            <rect x="50" y="126" width="90" height="34" rx="6" class="diag-box diag-box-warn" />
+            <text x="95" y="147" text-anchor="middle" class="diagram-sub">lp2</text>
+          </g>
+          <line id="e2" class="step-el diag-edge diag-edge-warn" x1="140" y1="143" x2="245" y2="143" marker-end="url(#arrow)" />
+          <g id="t2" class="step-el">
+            <rect x="250" y="126" width="120" height="34" rx="6" class="diag-box diag-box-warn" />
+            <text x="310" y="147" text-anchor="middle" class="diagram-sub">dead: xmax✓</text>
+          </g>
+
+          <!-- Slot 3 (dead) -->
+          <g id="lp3" class="step-el">
+            <rect x="50" y="170" width="90" height="34" rx="6" class="diag-box diag-box-warn" />
+            <text x="95" y="191" text-anchor="middle" class="diagram-sub">lp3</text>
+          </g>
+          <line id="e3" class="step-el diag-edge diag-edge-warn" x1="140" y1="187" x2="245" y2="187" marker-end="url(#arrow)" />
+          <g id="t3" class="step-el">
+            <rect x="250" y="170" width="120" height="34" rx="6" class="diag-box diag-box-warn" />
+            <text x="310" y="191" text-anchor="middle" class="diagram-sub">dead: xmax✓</text>
+          </g>
+
+          <!-- Slot 4 (live) -->
+          <g id="lp4" class="step-el">
+            <rect x="50" y="214" width="90" height="34" rx="6" class="diag-box" />
+            <text x="95" y="235" text-anchor="middle" class="diagram-sub">lp4 → live</text>
+          </g>
+          <line id="e4" class="step-el diag-edge" x1="140" y1="231" x2="245" y2="231" marker-end="url(#arrow)" />
+          <g id="t4" class="step-el">
+            <rect x="250" y="214" width="120" height="34" rx="6" class="diag-box" />
+            <text x="310" y="235" text-anchor="middle" class="diagram-sub">tuple (live)</text>
+          </g>
+
+          <!-- OldestXmin horizon note -->
+          <text id="horizon" x="50" y="290" class="step-el diagram-sub">Removable iff xmax &lt; OldestXmin</text>
+          <text id="lpunused" x="50" y="312" class="step-el diagram-sub diag-warn-text">lp2, lp3 → LP_UNUSED (kept, not freed)</text>
+          <text id="noshrink" x="50" y="334" class="step-el diagram-sub diag-skip-text">file size unchanged ✕ (space reusable)</text>
+
+          <!-- FSM card -->
+          <g id="fsm" class="step-el">
+            <rect x="430" y="90" width="200" height="70" rx="8" class="diag-box diag-box-result" />
+            <text x="530" y="120" text-anchor="middle" class="diagram-label">FSM</text>
+            <text x="530" y="140" text-anchor="middle" class="diagram-sub">records freed slots</text>
+          </g>
+
+          <!-- VM card -->
+          <g id="vm" class="step-el">
+            <rect x="430" y="185" width="200" height="80" rx="8" class="diag-box diag-box-cover" />
+            <text x="530" y="213" text-anchor="middle" class="diagram-label">Visibility map</text>
+            <text x="530" y="233" text-anchor="middle" class="diagram-sub">all-visible bit set</text>
+            <text x="530" y="251" text-anchor="middle" class="diagram-sub">all-frozen (freeze scan)</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>How plain VACUUM works, mechanically</h3>
+        <p>Three blocks, each tied to a known structure:</p>
+        <ol>
+          <li><strong>Scan &amp; collect dead TIDs</strong> into <code>maintenance_work_mem</code>. If that buffer fills, VACUUM makes multiple index passes — so under-sized memory multiplies the cost on a large table.</li>
+          <li><strong>Clean indexes</strong> — remove every index entry pointing at a dead TID. More indexes therefore means a costlier VACUUM.</li>
+          <li><strong>Vacuum the heap page-by-page</strong> — remove dead tuples, <strong>defragment</strong> (slide live tuples together, in-page compaction), update the <strong>FSM</strong> and <strong>visibility map</strong>, and finally truncate any <em>trailing</em> empty pages.</li>
+        </ol>
+        <p>Two precise facts underpin the "why doesn't the file shrink?" answer. First, <strong>line pointers are not freed, only marked <code>LP_UNUSED</code></strong>: reclaiming a slot would shift offset numbers, change live rows' TIDs, and force rewriting every index entry — so slots recycle in place, keeping TIDs stable. Second, the <strong>VM lets VACUUM skip all-visible pages</strong> (a full scan becomes targeted), and a <strong>ring buffer</strong> keeps VACUUM from evicting hot pages out of <code>shared_buffers</code>.</p>
+
+        <h3>XID wraparound and the freeze deadline</h3>
+        <p>The age comparison is <em>relative</em>, not an absolute crossing: <code>age = current_xid − xmin (mod 2³²)</code>, flipping a tuple from "past" to "future" once the gap exceeds ~2³¹. Freezing stamps sufficiently-old tuples as older than every normal XID forever (a flag since PG 9.4; older clusters set <code>xmin = FrozenTransactionId = 2</code>). The machinery: <code>pg_class.relfrozenxid</code> (oldest unfrozen XID), <code>vacuum_freeze_min_age</code> (freeze threshold), and <code>autovacuum_freeze_max_age</code> (the hard deadline). The failure ladder is loud then fatal: at ~40M XIDs left, <code>WARNING: must be vacuumed within N transactions</code>; at ~3M left, <code>ERROR: database is not accepting commands to avoid wraparound data loss</code> — writes refused until vacuumed. A parallel <em>multixact ID</em> wraparound exists for shared row locks.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern #1:</strong> believing "VACUUM will shrink the file." It won't.
+          <pre><code class="lang-sql">DELETE FROM events WHERE created &lt; '2020-01-01';  -- 9M of 10M rows
+VACUUM events;
+-- ...and the file on disk is essentially the same size. 🤔❌</code></pre>
+          <p>Why it's expected: VACUUM made the 9M dead tuples' space <em>reusable</em> and recorded it in the FSM, but the freed slots are <strong>scattered</strong>, not trailing — there are no all-empty trailing pages to truncate, so the file cannot shrink. What actually shrinks it: <code>VACUUM FULL</code> (rewrites the table, but <code>ACCESS EXCLUSIVE</code> lock = outage) or <code>pg_repack</code> (rebuilds table + indexes online, brief lock, no outage). Plain VACUUM did its job — it just isn't a shrink tool.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern #2:</strong> disabling autovacuum to "avoid the I/O" on an append-only or write-heavy table.
+          <pre><code class="lang-sql">ALTER TABLE audit_log SET (autovacuum_enabled = false);  -- ❌ time bomb</code></pre>
+          <p>Why it breaks: <code>autovacuum_freeze_max_age</code> forces an <strong>anti-wraparound autovacuum even on an append-only table and even when autovacuum is off</strong> — because freezing is not optional, it is what prevents silent data loss. Turning autovacuum off doesn't skip that work; it defers it into one giant, unavoidable, badly-timed vacuum (and risks the wraparound shutdown that refuses all writes). Tune autovacuum to run <em>sooner and gentler</em> instead of switching it off.</p>
+        </div>
+
+        <h3>Autovacuum's trigger, precisely</h3>
+        <p>A launcher spawns workers (<code>autovacuum_max_workers</code>, default 3) every <code>autovacuum_naptime</code> (10s). The vacuum threshold is:</p>
+        <pre><code class="lang-text">vacuum threshold = autovacuum_vacuum_threshold (50)
+                 + autovacuum_vacuum_scale_factor (0.1) × n_live_tuples</code></pre>
+        <p>So a 1M-row table waits for ~100,050 dead tuples before it fires — which is why hot, large tables usually need a per-table scale-factor override. Autovacuum also runs <strong>ANALYZE</strong> to refresh planner statistics (histograms, <code>n_distinct</code>), and its I/O is throttled by <code>autovacuum_vacuum_cost_delay</code>/<code>cost_limit</code>, balanced across all workers.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC — How Postgres Implements Multi-Version Concurrency Control</strong>
+        <span>The source of the problem: version-stamped tuples and the OldestXmin horizon are exactly what create dead tuples and gate whether VACUUM can reclaim them.</span>
+      </a>
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>Line pointers, TIDs, and relfilenode rewrites — the physical layer VACUUM defragments in place and VACUUM FULL rewrites wholesale.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Shares the visibility map: the all-visible bit that VACUUM sets is what lets an index-only scan skip the heap fetch.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>Long-running snapshots at higher isolation levels are a prime way to pin OldestXmin low and starve VACUUM of removable tuples.</span>
+      </a>
+      <a class="related-card" href="../write-ahead-log/index.html" data-entry="write-ahead-log">
+        <strong>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</strong>
+        <span>VACUUM and freezing emit WAL too; checkpoints flush the dirty pages they produce — the next bridge from this topic.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>The ring buffer that keeps VACUUM from evicting hot pages out of shared_buffers lives here.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/routine-vacuuming.html" target="_blank" rel="noopener">PostgreSQL Documentation — Routine Vacuuming</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql06/01.html" target="_blank" rel="noopener">The Internals of PostgreSQL §6.1 — Vacuum Processing</a> — fetched 2026-06-17</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">You DELETE 9M of 10M rows, then run plain <code>VACUUM</code>, and the file barely changes size. Which statement correctly explains what happened?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">VACUUM failed — you must run it twice for the space to be released.</button>
+            <button class="option" data-correct="true">Expected: VACUUM made the dead space reusable and recorded it in the FSM, but the freed slots are scattered, not trailing, so there are no all-empty trailing pages to truncate. To actually shrink the file you need VACUUM FULL (exclusive lock) or pg_repack (brief lock).</button>
+            <button class="option" data-correct="false">The rows weren't really deleted; DELETE only hides them until COMMIT.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Plain VACUUM reclaims dead space <em>for reuse</em> via the FSM; it truncates only trailing empty pages. Scattered free space keeps the file the same size — shrinking requires a rewrite (VACUUM FULL or pg_repack).</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Autovacuum is clearly running on a table (you can see it in <code>pg_stat_activity</code>), yet the table keeps bloating. What is the most likely root cause?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">Something is pinning OldestXmin low — a long-open transaction, an orphaned replication slot, or a stuck prepared transaction — so dead tuples fail the <code>xmax &lt; OldestXmin</code> test and are not removable.</button>
+            <button class="option" data-correct="false">Autovacuum can only reclaim indexes, never heap tuples, so heap bloat always grows.</button>
+            <button class="option" data-correct="false">The table needs more indexes so VACUUM has somewhere to move the dead rows.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Removability requires <code>xmax &lt; OldestXmin</code>. A pinned-low horizon means VACUUM runs but reclaims nothing. Debug via <code>pg_stat_activity.backend_xmin</code>, then <code>pg_replication_slots.xmin</code>, then <code>pg_prepared_xacts</code>.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What is XID wraparound, why is the comparison <em>circular</em>, what does freezing concretely do — and which parameter forces an anti-wraparound vacuum even on an append-only table with autovacuum turned off?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p><code>xmin</code>/<code>xmax</code> are 32-bit and compared modulo 2³², so age is <em>relative</em>: <code>age = current_xid − xmin (mod 2³²)</code>. When the gap exceeds ~2³¹, an old tuple's insert flips from past to future and its row silently becomes invisible — data loss. <strong>Freezing</strong> stamps sufficiently-old tuples <code>HEAP_XMIN_FROZEN</code> (a flag since PG 9.4) meaning "older than every normal XID, forever," so they never wrap. The parameter that forces the issue is <strong><code>autovacuum_freeze_max_age</code></strong>: it triggers an anti-wraparound autovacuum even on an append-only table and even when <code>autovacuum_enabled = false</code>, because freezing is mandatory to prevent wraparound.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: VACUUM cleaning a heap page) ─
+    const steps = [
+      { activate: ['#lp2', '#t2', '#lp3', '#t3', '#horizon'],
+        explanation: 'A DELETE/UPDATE left two dead tuples (lp2, lp3): their xmax has committed. They are only removable once xmax < OldestXmin — the visibility horizon no live snapshot needs anymore.' },
+      { activate: ['#lp1', '#lp2', '#lp3', '#lp4', '#e1', '#e2', '#e3', '#e4'],
+        explanation: 'VACUUM scans the page and collects the dead TIDs into maintenance_work_mem, then cleans every index entry pointing at them. More indexes = more entries to remove = a costlier VACUUM.' },
+      { activate: ['#t2', '#t3', '#lp2', '#lp3', '#lpunused'],
+        explanation: 'The dead tuple bodies are removed and live tuples are defragmented together — but the line pointers lp2 and lp3 are only marked LP_UNUSED, not freed. Freeing a slot would shift offset numbers, change live rows’ TIDs, and force rewriting every index entry, so slots recycle in place.' },
+      { activate: ['#fsm', '#vm'],
+        explanation: 'VACUUM records the freed space in the FSM (so future rows refill these slots) and updates the visibility map: the all-visible bit lets index-only scans and future vacuums skip the page; the all-frozen bit lets even an anti-wraparound vacuum skip it.' },
+      { activate: ['#noshrink'],
+        explanation: 'Finally VACUUM truncates any trailing empty pages — but these freed slots are scattered mid-file, so the file size is unchanged. The space is reusable, not returned to the OS. Only VACUUM FULL or pg_repack shrinks the file.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'mvcc':                { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'heap-storage-layout': { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.' },
+      'covering-indexes':    { title: 'Covering Indexes & Index-Only Scans', summary: "Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres's visibility map / MVCC can still force heap access." },
+      'isolation-levels':    { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'write-ahead-log':     { title: 'Write-Ahead Log (WAL) — Crash Recovery & the Durability Guarantee', summary: 'Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints & redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.' },
+      'buffer-pool':         { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

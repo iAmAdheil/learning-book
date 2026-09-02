@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Bandwidth vs Throughput vs Latency vs Jitter — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific: highway diagram + slider controls */
+    .diagram-svg { max-height: 460px; }
+    .diagram-svg .lane { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .lane.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .car { fill: var(--accent); }
+    .diagram-svg .car-jitter { fill: var(--warn); }
+    .diagram-svg .rule { stroke: var(--text-muted); stroke-width: 1; }
+    .diagram-svg .readout-val { fill: var(--text); font-family: var(--mono); font-size: 13px; font-weight: 700; }
+    .diagram-svg .readout-key { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .map-note { fill: var(--accent); font-family: var(--font); font-size: 11px; font-weight: 700; }
+    .slider-row { display: flex; flex-wrap: wrap; gap: 1.25rem; margin-top: 0.85rem; }
+    .slider-row label { display: flex; flex-direction: column; gap: 0.2rem; font-size: 0.8rem; color: var(--text-muted); min-width: 220px; flex: 1; }
+    .slider-row output { font-family: var(--mono); font-weight: 700; color: var(--text); }
+    .slider-row input[type=range] { accent-color: var(--accent); width: 100%; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Bandwidth vs Throughput vs Latency vs Jitter</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Four words everyone uses interchangeably that measure completely different things. Two of them are <strong>rates</strong> — bandwidth and throughput, in bits per second. Two are <strong>times</strong> — latency and jitter, in milliseconds. Rates and times cannot be traded for each other, which is why the most expensive mistake in network performance work is buying more bandwidth for a problem that was never about bandwidth. The question that prevents it: <em>is this workload latency-bound or bandwidth-bound?</em></p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">performance</span>
+        <span class="badge tag">bandwidth</span>
+        <span class="badge tag">throughput</span>
+        <span class="badge tag">latency</span>
+        <span class="badge tag">jitter</span>
+        <span class="badge tag">rtt</span>
+        <span class="badge tag">bandwidth-delay-product</span>
+        <span class="badge tag">cdn</span>
+        <span class="badge tag">qos</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Bandwidth</dt>
+        <dd>The <strong>maximum</strong> rate a link can carry, in bits/sec. It is a ceiling, not a speed: it says how many bits can be in motion side by side, never how quickly any one of them arrives. Quoted in <strong>bits</strong> (Mbps), while files are measured in <strong>bytes</strong> (MB) — a factor of 8 apart.</dd>
+
+        <dt>Throughput</dt>
+        <dd>The rate actually achieved, in bits/sec. Always ≤ bandwidth, pushed below it by header overhead, congestion, packet loss and retransmission, and — less obviously — by latency itself. Throughput is what you measure; bandwidth is what you bought.</dd>
+
+        <dt>Latency (and RTT)</dt>
+        <dd>The <em>time</em> for data to travel, in milliseconds. It is the sum of four delays: <strong>propagation</strong> (distance ÷ signal speed, ~200,000 km/s in fiber — a physics floor), <strong>transmission</strong> (packet size ÷ bandwidth), <strong>queuing</strong> in router buffers, and <strong>processing</strong> at each hop. Usually quoted as <strong>round-trip time (RTT)</strong> — what <code>ping</code> reports — roughly twice the one-way figure. A workload is <strong>latency-bound</strong> when its finish time is dominated by round trips, and <strong>bandwidth-bound</strong> when it is dominated by bits/sec.</dd>
+
+        <dt>Jitter</dt>
+        <dd>The <em>variation</em> in latency from packet to packet, in milliseconds. Average latency can be excellent while jitter is terrible. It is irrelevant to file transfers — TCP reassembles in order and only the total matters — and lethal to real-time media, where irregular arrival becomes audible stutter.</dd>
+
+        <dt>Bandwidth-delay product (BDP)</dt>
+        <dd><code>BDP = bandwidth × RTT</code>: the amount of data that can be "in flight" at one time. It is the <em>volume</em> of the pipe rather than its width, and it is the one place where a rate and a time multiply into something meaningful. It sets how much a sender must be willing to have unacknowledged before it is forced to stop and wait.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>Take a single satellite internet plan: <strong>200 Mbps bandwidth, 600 ms RTT</strong>. One link, one set of numbers, and two workloads that it treats in opposite ways.</p>
+
+      <pre><code class="lang-text">Workload A — download a 40 GB game
+  transfer  = 40 GB × 8 = 320,000 Mb ÷ 200 Mbps = 1,600 s
+  latency   = 0.6 s paid once at the start
+  total     ≈ 1,600.6 s        → latency is 0.04% of the job
+
+Workload B — a video call
+  every gesture, word and frame waits a full 600 ms round trip
+  bandwidth used ≈ 3 Mbps out of 200 available
+  total     → unusable, and 2 Gbps would not change it</code></pre>
+
+      <p>The same link is excellent and unusable at once. Nothing about the plan changed between the two runs; what changed is which quantity the work depends on. The download is <strong>bandwidth-bound</strong> — one round trip amortized over 1,600 seconds of streaming bits. The call is <strong>latency-bound</strong> — thousands of round trips, each paid in full, using a rounding error of the available capacity.</p>
+
+      <p>The same split explains the most common disappointment in consumer networking: upgrading a home connection and finding that the web feels identical. A typical page pulls 80 small resources, and the ones that matter arrive over a handful of sequential round trips:</p>
+
+      <pre><code class="lang-text">Page load, 100 ms RTT, resources fetched over 10 sequential round trips
+
+  round trips   10 × 100 ms      = 1,000 ms   ← pure waiting
+  bytes         2 MB at 100 Mbps =   160 ms
+
+  upgrade 100 Mbps → 1 Gbps:
+  round trips   10 × 100 ms      = 1,000 ms   ← unchanged
+  bytes         2 MB at 1 Gbps   =    16 ms
+                                   ---------
+  total 1,160 ms → 1,016 ms       (12% better for 10× the bandwidth)</code></pre>
+
+      <p>A tenfold bandwidth increase removed 144 ms from a 1,160 ms page load, because 86% of that page load was never bandwidth at all. It was distance and round trips. This is why so much of modern protocol design is a <strong>war on round trips</strong> rather than a hunt for capacity: HTTP/2 multiplexing removes serialized requests, connection reuse removes repeated handshakes, TLS 1.3 cuts setup to one round trip, QUIC to zero on resumption, and CDNs attack the RTT itself by moving the content physically closer.</p>
+
+      <p>That last one is the deepest point. Propagation delay is <code>distance ÷ ~200,000 km/s</code>, so New York to London is about <strong>28 ms one-way, permanently</strong>. No amount of money buys a shorter speed-of-light path. It only buys a shorter distance — which is precisely, and only, what a CDN sells.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Picture a highway between two cities. The number of <strong>lanes</strong> is your bandwidth — how many cars can travel abreast. The <strong>length of the road</strong> is your latency — how long any single car takes to get from end to end. The cars <strong>actually arriving</strong> per hour at the far end is throughput, and how <strong>irregularly spaced</strong> those arrivals are is jitter.</p>
+
+      <p>Now hold the picture and ask the question that settles the whole topic: if you add lanes, does the road get shorter? It does not. You can widen a 3,000 km highway to twelve lanes and every car still drives 3,000 km. That is the entire reason "upgrade to gigabit" so often changes nothing — and the reason the only real fix for a long road is to move the destination closer, which is a CDN.</p>
+
+      <p>Drag the two sliders below and watch which numbers move. Adding lanes transforms the bulk transfer and barely touches the interactive page. Shortening the road does the reverse. Watch the third readout especially: with a fixed send window, a long road can <em>cap your throughput far below the lanes you paid for</em>.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 660 440" aria-label="Highway analogy: lanes represent bandwidth, road length represents latency, cars arriving represent throughput, irregular spacing represents jitter, and cars on the road represent the bandwidth-delay product">
+          <defs>
+            <marker id="arrow" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="currentColor" />
+            </marker>
+            <marker id="arrow-back" markerWidth="9" markerHeight="9" refX="1" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M7,0 L0,3 L7,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- Sender -->
+          <rect x="8" y="60" width="86" height="170" rx="8" class="node-rect" />
+          <text x="51" y="140" text-anchor="middle" class="node-text">Sender</text>
+          <text x="51" y="158" text-anchor="middle" class="label-text">on-ramp</text>
+
+          <!-- Lanes = bandwidth -->
+          <g id="g-lanes" class="step-el">
+            <g id="lanes-holder"></g>
+            <text x="100" y="48" class="map-note">lanes = bandwidth</text>
+            <text id="lanes-label" x="100" y="32" class="label-text">8 lanes · 1000 Mbps ceiling</text>
+          </g>
+
+          <!-- Cars on the road = BDP -->
+          <g id="g-inflight" class="step-el">
+            <g id="cars-holder"></g>
+            <text id="inflight-label" x="100" y="252" class="map-note">cars on the road at once = bandwidth × RTT = BDP</text>
+            <text id="inflight-val" x="100" y="268" class="label-text">BDP = 0 MB</text>
+          </g>
+
+          <!-- Receiver -->
+          <g id="g-receiver">
+            <rect id="recv-box" x="540" y="60" width="86" height="170" rx="8" class="node-rect" />
+            <text id="recv-text" x="583" y="140" text-anchor="middle" class="node-text">Receiver</text>
+            <text id="recv-sub" x="583" y="158" text-anchor="middle" class="label-text">off-ramp</text>
+          </g>
+
+          <!-- Road length = latency -->
+          <g id="g-length" class="step-el">
+            <line id="len-line" x1="100" y1="292" x2="534" y2="292" class="rule" marker-start="url(#arrow-back)" marker-end="url(#arrow)" />
+            <text id="len-label" x="317" y="284" text-anchor="middle" class="map-note">road length = latency</text>
+            <text id="len-val" x="317" y="310" text-anchor="middle" class="label-text">RTT 100 ms · ~10,000 km of fiber</text>
+          </g>
+
+          <!-- Jitter = irregular spacing -->
+          <g id="g-jitter" class="step-el">
+            <line x1="100" y1="344" x2="620" y2="344" class="rule" stroke-dasharray="3 4" />
+            <g id="jitter-holder"></g>
+            <text x="100" y="332" class="map-note">uneven spacing between arrivals = jitter</text>
+            <text x="100" y="366" class="label-text">same average latency, inconsistent arrival → stutter in real-time media</text>
+          </g>
+
+          <!-- Readouts -->
+          <g id="g-readouts">
+            <line x1="8" y1="382" x2="652" y2="382" class="rule" />
+            <g id="g-bulk" class="step-el">
+              <text x="8" y="402" class="readout-key">bandwidth-bound: 1 GB download</text>
+              <text id="out-bulk" x="8" y="422" class="readout-val">—</text>
+            </g>
+            <g id="g-interactive" class="step-el">
+              <text x="228" y="402" class="readout-key">latency-bound: page, 30 round trips</text>
+              <text id="out-page" x="228" y="422" class="readout-val">—</text>
+            </g>
+            <g id="g-window" class="step-el">
+              <text x="452" y="402" class="readout-key">throughput, 64 KB window</text>
+              <text id="out-thru" x="452" y="422" class="readout-val">—</text>
+            </g>
+          </g>
+        </svg>
+
+        <div class="slider-row">
+          <label for="bw-slider">Lanes (bandwidth): <output id="bw-out">1000 Mbps</output>
+            <input type="range" id="bw-slider" min="1" max="8" step="1" value="8" />
+          </label>
+          <label for="rtt-slider">Road length (RTT): <output id="rtt-out">100 ms</output>
+            <input type="range" id="rtt-slider" min="10" max="600" step="10" value="100" />
+          </label>
+        </div>
+
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>The third readout is the one that surprises people. A sender may only keep a limited amount of data unacknowledged — a <em>window</em>. If that window is smaller than the BDP, the sender fills the road, stops, and waits for the far end's acknowledgement to travel all the way back before it may send again. With a 64 KB window and a 600 ms RTT, throughput is pinned near <strong>0.9 Mbps no matter how many lanes exist</strong>. The road is wide and long, and mostly empty. That configuration has a name: a <strong>long fat network</strong>, and it is the cleanest proof that latency limits throughput.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Bits versus bytes — the most common practical error</h3>
+        <p>Bandwidth is sold in <strong>bits</strong> per second; files are measured in <strong>bytes</strong>. Eight bits to the byte, so the headline number divides by 8 before it means anything about a download:</p>
+        <pre><code class="lang-text">  100 Mbps  →  12.5 MB/s      (theoretical ceiling)
+    1 Gbps   →  125  MB/s
+   10 Gbps   →  1.25 GB/s</code></pre>
+        <p>A user reporting "I pay for 100 Mbps but only get 11 MB/s" is seeing correct behaviour: 12.5 MB/s is the ceiling and header overhead takes the rest. The lower-case <code>b</code> and upper-case <code>B</code> are doing all the work in that sentence.</p>
+
+        <h3>Why throughput sits below bandwidth</h3>
+        <p>Four independent taxes, only one of which is usually noticed:</p>
+        <ul>
+          <li><strong>Header overhead</strong> — every layer adds bytes that are not payload. Small packets pay proportionally more.</li>
+          <li><strong>Congestion</strong> — the bottleneck is whichever link on the path is narrowest, not the one you bought.</li>
+          <li><strong>Loss and retransmission</strong> — a lost packet costs its own bytes again, plus at least one round trip of delay.</li>
+          <li><strong>Latency itself</strong> — via the window-versus-BDP ceiling above. This is the one that gets missed, because it looks like a bandwidth problem and is not one.</li>
+        </ul>
+
+        <h3>Jitter, and the buffer that trades latency to remove it</h3>
+        <p>Two links can both average 40 ms while behaving completely differently: one varying by 2 ms, the other by 35 ms. For a file transfer the two are indistinguishable. For a voice call the second is unusable, because playback needs a packet <em>every</em> 20 ms and a late packet is as bad as a lost one. The standard fix is a <strong>jitter buffer</strong>: hold arriving packets for a few milliseconds so that late ones catch up and playback stays smooth. Note what it costs — the buffer <em>adds</em> latency to <em>remove</em> jitter, and it must be sized for the worst variation, so higher jitter means a bigger buffer means more delay. That trade is also why <strong>QoS</strong> exists: give the small, jitter-sensitive voice packets priority in router queues over bulk traffic that would never notice waiting.</p>
+
+        <h3>RTT versus one-way</h3>
+        <p>Latency is usually quoted as RTT because that is what is easy to measure — <code>ping</code> needs no clock synchronisation between the two ends. One-way delay is roughly half, and it is what a stream of media actually experiences. Interactive protocols pay in RTTs, so budget in RTTs: any handshake, any request-then-response, any acknowledgement is a full round trip.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> diagnosing "the site is slow" by upgrading the server's network link, without first establishing whether the workload is latency-bound or bandwidth-bound.
+          <pre><code class="lang-text">Symptom:  page takes 1.2 s, users complain
+Action:   upgrade server uplink 1 Gbps → 10 Gbps
+Measured: link utilization was 4% before, 4% after
+Result:   1.2 s → 1.19 s
+
+The actual profile:
+  DNS + TCP + TLS setup   3 round trips  = 300 ms
+  sequential resources    7 round trips  = 700 ms
+  bytes on the wire       2 MB @ 1 Gbps  =  16 ms   ← the only part upgraded</code></pre>
+          <p>Why it fails: 16 ms of that page load was bandwidth. The remaining 1,000 ms was round trips, and round trips are set by distance and protocol design, not capacity. The two conditions need <em>opposite</em> fixes — a bandwidth-bound workload wants more lanes, a latency-bound workload wants fewer round trips and a shorter road (connection reuse, multiplexing, TLS 1.3, an edge cache). Measure link utilization first: a saturated link is a bandwidth problem, an idle link with a slow page is a latency problem, and only one of them is for sale.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating "high bandwidth" as a synonym for "low latency" when specifying a link — the satellite trap.
+          <pre><code class="lang-text">Link A:  25 Mbps,  20 ms RTT     Link B:  200 Mbps, 600 ms RTT
+"B is 8× faster"  →  false for every interactive workload
+  SSH keystroke echo:      A 20 ms      B 600 ms   (unusable)
+  Video call round trip:   A fine       B fine as a monologue only
+  40 GB download:          A 3.6 hours  B 27 minutes</code></pre>
+          <p>Why it fails: bandwidth and latency are independent axes, and "fast" names neither of them. A geostationary satellite hop is ~35,800 km each way — the propagation delay is a consequence of orbital geometry, and no capacity upgrade touches it. Specify both numbers, always, and state which one the workload depends on.</p>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End — A Packet's Journey</strong>
+        <span>Where the round trips actually come from: DNS lookup, TCP and TLS handshakes, and hop-by-hop forwarding are each a latency cost this entry only counts.</span>
+      </a>
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation — Segments → Packets → Frames → Bits</strong>
+        <span>The header overhead that opens the first gap between bandwidth and throughput — every layer's wrapper is capacity spent on something other than payload.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>Stuart Cheshire, "It's the Latency, Stupid" (1996–97)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A satellite plan offers 200 Mbps with a 600 ms RTT. Which workload does it serve well, and why?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Both, since 200 Mbps is more than either workload needs.</button>
+            <button class="option" data-correct="true">Large downloads yes, video calls no — the download pays the 600 ms once and then streams at the full rate, while the call pays it on every single interaction.</button>
+            <button class="option" data-correct="false">Video calls yes, downloads no — calls use little data, so the high RTT does not matter.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Bandwidth and latency are independent axes. A bulk download is bandwidth-bound and amortizes the one-time delay to nothing; a call is latency-bound and pays 600 ms per exchange, using ~3 Mbps of the 200 available.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Two links both average 40 ms latency. Link A varies by 2 ms, link B by 35 ms. Which is worse for a video call, and why doesn't the equal average rescue it?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Neither — the averages are equal, so both deliver the same call quality.</button>
+            <button class="option" data-correct="false">Link A, because low variation means packets are being held back somewhere.</button>
+            <button class="option" data-correct="true">Link B — real-time playback needs packets at a steady cadence, so variation forces a larger jitter buffer, which adds delay on top of the same 40 ms average.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Playback breaks on variation, not on the mean: a packet that arrives late is as useless as one that never arrives. Removing 35 ms of jitter requires buffering for the worst case, so B ends up with both stutter risk and higher effective delay.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A 1 Gbps link with a 200 ms RTT is measured at 2.6 Mbps, with no packet loss and an idle path. What would you check first, and what would adding more bandwidth do?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Check the <strong>send window against the bandwidth-delay product</strong>. The BDP here is 1 Gbps × 0.2 s = 25 MB, so filling the pipe requires 25 MB of unacknowledged data in flight. A default 64 KB window gives 64 KB ÷ 0.2 s ≈ 2.6 Mbps — exactly the measured figure. The sender transmits 64 KB, then stalls for a full round trip waiting for an acknowledgement, leaving the link roughly 99.7% idle. This is the <strong>long fat network</strong> case: throughput ≈ window ÷ RTT, so it is capped by latency and window size, not capacity. Adding bandwidth changes nothing, because the extra lanes are already unused. The fixes are a larger window (window scaling, larger buffers) or a shorter road — moving the endpoint closer, which is what an edge cache or CDN does.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Highway model: sliders + step reveal ──────────────────────
+    const SVGNS = 'http://www.w3.org/2000/svg';
+    // Lane count 1..8 maps to a realistic bandwidth ladder (Mbps).
+    const BW_LADDER = [5, 10, 25, 50, 100, 250, 500, 1000];
+    const WINDOW_BYTES = 64 * 1024;   // classic un-scaled TCP window
+    const ROAD_X0 = 100;              // left edge of the lanes
+    const ROAD_X_MIN = 300, ROAD_X_MAX = 534;  // right edge, scaled by RTT
+    const LANE_TOP = 68, LANE_H = 16, LANE_GAP = 4;
+    // Fixed irregular offsets: same "average" spacing, uneven arrivals.
+    const JITTER_OFFSETS = [0, 46, 62, 130, 208, 224, 300, 372, 388, 402, 470, 512];
+
+    const bwSlider = document.getElementById('bw-slider');
+    const rttSlider = document.getElementById('rtt-slider');
+    const bwOut = document.getElementById('bw-out');
+    const rttOut = document.getElementById('rtt-out');
+
+    function fmtBytes(b) {
+      if (b >= 1e6) return (b / 1e6).toFixed(b >= 1e7 ? 0 : 1) + ' MB';
+      if (b >= 1e3) return (b / 1e3).toFixed(0) + ' KB';
+      return b.toFixed(0) + ' B';
+    }
+    function fmtSecs(s) {
+      if (s >= 3600) return (s / 3600).toFixed(1) + ' h';
+      if (s >= 60) return (s / 60).toFixed(1) + ' min';
+      if (s >= 1) return s.toFixed(1) + ' s';
+      return (s * 1000).toFixed(0) + ' ms';
+    }
+
+    function render() {
+      const lanes = +bwSlider.value;
+      const bw = BW_LADDER[lanes - 1];          // Mbps
+      const rtt = +rttSlider.value;             // ms
+      const roadX1 = ROAD_X_MIN + (rtt - 10) / 590 * (ROAD_X_MAX - ROAD_X_MIN);
+      const roadW = roadX1 - ROAD_X0;
+
+      bwOut.textContent = bw + ' Mbps';
+      rttOut.textContent = rtt + ' ms';
+
+      // Lanes = bandwidth
+      const lanesHolder = document.getElementById('lanes-holder');
+      lanesHolder.textContent = '';
+      for (let i = 0; i < lanes; i++) {
+        const r = document.createElementNS(SVGNS, 'rect');
+        r.setAttribute('x', ROAD_X0);
+        r.setAttribute('y', LANE_TOP + i * (LANE_H + LANE_GAP));
+        r.setAttribute('width', roadW);
+        r.setAttribute('height', LANE_H);
+        r.setAttribute('rx', 3);
+        r.setAttribute('class', 'lane');
+        lanesHolder.appendChild(r);
+      }
+      document.getElementById('lanes-label').textContent =
+        lanes + (lanes === 1 ? ' lane · ' : ' lanes · ') + bw + ' Mbps ceiling';
+
+      // Receiver slides with the road length
+      document.getElementById('recv-box').setAttribute('x', roadX1 + 6);
+      document.getElementById('recv-text').setAttribute('x', roadX1 + 49);
+      document.getElementById('recv-sub').setAttribute('x', roadX1 + 49);
+
+      // Road length = latency
+      document.getElementById('len-line').setAttribute('x2', roadX1);
+      const midX = (ROAD_X0 + roadX1) / 2;
+      document.getElementById('len-label').setAttribute('x', midX);
+      document.getElementById('len-val').setAttribute('x', midX);
+      // ~200,000 km/s in fiber; RTT covers the distance twice.
+      const km = Math.round(rtt / 1000 * 200000 / 2);
+      document.getElementById('len-val').textContent =
+        'RTT ' + rtt + ' ms · ≈ ' + km.toLocaleString('en-US') + ' km of fiber each way';
+
+      // Cars on the road = bandwidth-delay product
+      const bdpBytes = bw * 1e6 / 8 * (rtt / 1000);
+      const carCount = Math.max(1, Math.min(60, Math.round(bdpBytes / 65536)));
+      const carsHolder = document.getElementById('cars-holder');
+      carsHolder.textContent = '';
+      for (let i = 0; i < carCount; i++) {
+        const c = document.createElementNS(SVGNS, 'rect');
+        const lane = i % lanes;
+        const slot = Math.floor(i / lanes);
+        const perLane = Math.ceil(carCount / lanes);
+        const x = ROAD_X0 + 6 + (slot + 0.5) * ((roadW - 12) / Math.max(perLane, 1)) - 5;
+        c.setAttribute('x', x);
+        c.setAttribute('y', LANE_TOP + lane * (LANE_H + LANE_GAP) + 4);
+        c.setAttribute('width', 10);
+        c.setAttribute('height', 8);
+        c.setAttribute('rx', 2);
+        c.setAttribute('class', 'car');
+        carsHolder.appendChild(c);
+      }
+      document.getElementById('inflight-val').textContent =
+        'BDP = ' + bw + ' Mbps × ' + rtt + ' ms = ' + fmtBytes(bdpBytes) +
+        '  ≈ ' + carCount + ' × 64 KB in flight';
+
+      // Jitter strip (illustrative, independent of the sliders)
+      const jitterHolder = document.getElementById('jitter-holder');
+      jitterHolder.textContent = '';
+      JITTER_OFFSETS.forEach(off => {
+        const c = document.createElementNS(SVGNS, 'rect');
+        c.setAttribute('x', ROAD_X0 + off);
+        c.setAttribute('y', 338);
+        c.setAttribute('width', 8);
+        c.setAttribute('height', 12);
+        c.setAttribute('rx', 2);
+        c.setAttribute('class', 'car-jitter');
+        jitterHolder.appendChild(c);
+      });
+
+      // Readouts
+      const bulk = 8000 / bw + rtt / 1000;                 // 1 GB = 8000 Mb
+      const page = 30 * rtt / 1000 + 16 / bw;              // 30 RTTs + 2 MB
+      const windowThru = WINDOW_BYTES * 8 / (rtt / 1000) / 1e6;   // Mbps
+      const thru = Math.min(bw, windowThru);
+      document.getElementById('out-bulk').textContent = fmtSecs(bulk);
+      document.getElementById('out-page').textContent = fmtSecs(page);
+      document.getElementById('out-thru').textContent =
+        thru.toFixed(1) + ' Mbps' + (thru < bw ? ' (capped)' : ' (full)');
+    }
+
+    const steps = [
+      { activate: ['#g-lanes'],
+        explanation: 'Lanes = bandwidth. Eight lanes let eight cars travel abreast — a ceiling on how many bits can be in motion side by side. It says nothing at all about how fast any one car moves.' },
+      { activate: ['#g-length'],
+        explanation: 'Road length = latency. Drag the RTT slider: the receiver moves away and every car has further to drive. Nothing you do to the lane count shortens this road — which is exactly why bandwidth is not speed.' },
+      { activate: ['#g-inflight', '#g-lanes'],
+        explanation: 'Lanes × length = the cars that fit on the road at once: the bandwidth-delay product. This is the one place a rate and a time multiply into something real — the volume of the pipe, not its width.' },
+      { activate: ['#g-window'],
+        explanation: 'A sender may only keep so much data unacknowledged. With a 64 KB window, throughput is capped at 64 KB ÷ RTT regardless of lanes. Push RTT up and watch a 1000 Mbps link deliver under 1 Mbps — the long fat network.' },
+      { activate: ['#g-bulk'],
+        explanation: 'Bandwidth-bound work: a 1 GB download. Add lanes and this number collapses; lengthen the road and it barely moves, because the one-time delay is amortized over the whole transfer.' },
+      { activate: ['#g-interactive'],
+        explanation: 'Latency-bound work: a page needing 30 sequential round trips. Add lanes and almost nothing happens; shorten the road and it collapses. Opposite workload, opposite fix — hence CDNs rather than wider pipes.' },
+      { activate: ['#g-jitter'],
+        explanation: 'Jitter = uneven spacing between arrivals. Average latency can be perfect while spacing is ragged. Irrelevant to a download, fatal to real-time media — and the fix, a jitter buffer, pays extra latency to buy back consistency.' },
+    ];
+
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    function applyStep(i) {
+      document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+      document.querySelectorAll('.diagram-svg .lane').forEach(el => el.classList.remove('active'));
+      if (steps[i].activate) steps[i].activate.forEach(sel => {
+        document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        if (sel === '#g-lanes') document.querySelectorAll('#lanes-holder .lane').forEach(l => l.classList.add('active'));
+      });
+      if (stepExp) stepExp.textContent = steps[i].explanation || '';
+      if (stepNum) stepNum.textContent = i + 1;
+      prevBtn.disabled = i === 0;
+      nextBtn.disabled = i === steps.length - 1;
+    }
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+      render();
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+      [bwSlider, rttSlider].forEach(s => s.addEventListener('input', () => { render(); applyStep(currentStep); }));
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'how-internet-works': { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

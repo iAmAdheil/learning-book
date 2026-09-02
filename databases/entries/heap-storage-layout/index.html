@@ -1,0 +1,478 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* diag-* SVG vocabulary shim — maps to the same theme-aware CSS vars style.css uses for .node-*/.edge-* */
+    .diagram-svg .diag-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .diag-box, .diagram-svg .diag-box.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diag-box-warn { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .diagram-svg .diag-box-result { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-box-cover { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .diagram-label { fill: var(--text); font-family: var(--font); font-size: 13px; }
+    .diagram-svg .diagram-sub { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .diag-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .diagram-svg .step-el.active .diag-edge, .diagram-svg .diag-edge.active { stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-edge-warn { stroke: var(--accent); stroke-dasharray: 4 3; fill: none; }
+    .diagram-svg .diag-warn-text { fill: var(--accent); font-weight: 600; }
+    .diagram-svg .diag-skip-text { fill: var(--text-muted); }
+    .diagram-svg .diag-divider { stroke: var(--border); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A PostgreSQL table is just a <strong>heap file</strong> on disk ("heap" = an unordered pile of rows, <em>not</em> a binary heap) cut into fixed <strong>8&nbsp;KB pages</strong>, and inside each page rows are found indirectly through a small array of <strong>line pointers</strong> (a.k.a. <em>slots</em>). That one layer of indirection — an index or <code>ctid</code> points at a <strong>slot number</strong>, and the slot points at the tuple's current <strong>byte offset</strong> — is the keystone that makes in-page compaction, HOT updates, MVCC, and VACUUM possible.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">storage</span>
+        <span class="badge tag">heap-file</span>
+        <span class="badge tag">page</span>
+        <span class="badge tag">8kb-page</span>
+        <span class="badge tag">line-pointer</span>
+        <span class="badge tag">slot</span>
+        <span class="badge tag">tuple</span>
+        <span class="badge tag">ctid</span>
+        <span class="badge tag">tid</span>
+        <span class="badge tag">relfilenode</span>
+        <span class="badge tag">torn-page</span>
+        <span class="badge tag">full-page-write</span>
+        <span class="meta-dates">Created 2026-06-17 · Updated 2026-06-30</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Heap file</dt>
+        <dd>The on-disk file that holds a table's rows as an <em>unordered</em> pile ("heap"), created at <code>base/&lt;database-oid&gt;/&lt;relfilenode&gt;</code>. It is capped at 1&nbsp;GB per file; larger relations spill into numbered segments (<code>67890</code>, <code>67890.1</code>, …).</dd>
+
+        <dt>Page (8&nbsp;KB block)</dt>
+        <dd>The fixed-size unit of heap I/O. Postgres reads and writes a whole 8&nbsp;KB block, never a fraction. A page has four regions: a 24-byte header, a line-pointer array growing down, free space ("the hole"), and tuple data growing up from the end.</dd>
+
+        <dt>Line pointer (slot / item identifier)</dt>
+        <dd>A 4-byte <code>ItemIdData</code> holding <code>(byte offset, length, flags)</code>. Line pointers form an array numbered from <strong>1</strong>; that index is the <strong>offset number</strong> (the <em>slot</em>). It is the indirection layer decoupling a row's logical address (slot) from its physical address (bytes).</dd>
+
+        <dt>TID / ctid</dt>
+        <dd>A row's physical address, <code>(block number, offset number)</code>, exposed as the system column <code>ctid</code>. Indexes point at the <em>slot</em>, never at a raw byte position, so the address stays valid even after tuples shuffle within a page.</dd>
+
+        <dt>relfilenode</dt>
+        <dd>The number that <em>names</em> the heap file. It often equals the table OID but <strong>diverges after a rewrite</strong> (<code>TRUNCATE</code>, <code>CLUSTER</code>, <code>VACUUM FULL</code>, <code>REINDEX</code>, type-changing <code>ALTER TABLE</code>), which build a new file and atomically swap the table's pointer to it.</dd>
+
+        <dt>Forks (FSM &amp; VM)</dt>
+        <dd>One table is several files sharing the base name: the <strong>main fork</strong> (rows), <code>_fsm</code> — the <strong>Free Space Map</strong> (which pages have room for new tuples), <code>_vm</code> — the <strong>Visibility Map</strong> (which pages are all-visible), and <code>_init</code> for unlogged tables.</dd>
+
+        <dt>TOAST</dt>
+        <dd>The Oversized-Attribute Storage Technique: a row wider than ~2&nbsp;KB (¼ page) gets its wide <code>text</code>/<code>jsonb</code>/<code>bytea</code> values compressed and/or pushed out-of-line into a companion TOAST table, fetched only when that column is read.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A row's physical address is a <strong>TID</strong> <code>(block number, offset number)</code>, surfaced as the system column <code>ctid</code>. You can read it directly, and you can ask Postgres where a table's file lives on disk:</p>
+      <pre><code class="lang-sql">-- ctid = (block, slot), e.g. (0,3): block 0, slot #3
+SELECT ctid, * FROM accounts WHERE id = 7;
+
+-- Where does the heap file live?  base/&lt;db-oid&gt;/&lt;relfilenode&gt;
+SELECT pg_relation_filepath('accounts');</code></pre>
+
+      <p>Inside one 8&nbsp;KB page, four regions share the block — and two of them <strong>grow toward each other from opposite ends</strong> until the free space between them is exhausted:</p>
+      <pre><code class="lang-text"> ┌───────────────────────────────┐ byte 0
+ │ PageHeaderData      (24 bytes) │  fixed header
+ ├───────────────────────────────┤
+ │ line pointers (4 B each) ──▶   │  grow DOWN, end marked by pd_lower
+ ├───────────────────────────────┤
+ │      free space ("the hole")   │
+ ├───────────────────────────────┤
+ │   ◀── tuples (heap rows)       │  grow UP, start marked by pd_upper
+ ├───────────────────────────────┤
+ │ special space (empty for heap; │  B-tree pages put sibling links here
+ └───────────────────────────────┘ byte 8191</code></pre>
+      <p>The header fields that matter: <code>pd_lsn</code> (LSN of the last WAL record to touch this page — the link used in recovery), <code>pd_lower</code> (end of the line-pointer array = start of free space), and <code>pd_upper</code> (start of tuple data = end of free space). Free space is simply <code>pd_upper − pd_lower</code>; when it hits zero the page is full and the Free Space Map picks another page. A line pointer holds <code>(byte offset, length, flags)</code>, and reading a row is a two-hop lookup: go to block <em>N</em> → look up slot #<em>K</em> → follow its offset to the tuple.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a heap file as a <strong>filing cabinet</strong> and each page as one fixed-size <strong>drawer</strong>. Taped to the inside of the drawer face is an <strong>index-card array</strong> — the line pointers; card slot #3 says "folder #3 is 4 inches from the back." <strong>Folders (tuples)</strong> pack from the back forward; <strong>cards</strong> are added from the front; they grow toward each other until the drawer is full. You cite <strong>(drawer, card slot)</strong> — the TID — never inches-from-the-back, because folders shuffle forward when old ones are cleaned out, yet the <strong>slot number never changes</strong>, so cross-references elsewhere in the office (the indexes) stay valid.</p>
+      <p>Step through how a row is actually located, and watch what VACUUM can and cannot move.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 420" aria-label="How a row is located through the TID (block, slot) indirection inside an 8 KB page, and how VACUUM compaction moves the tuple while the slot number stays stable">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Left: the index entry / ctid ── -->
+          <g id="node-ctid" class="step-el">
+            <rect x="18" y="150" width="150" height="56" rx="8" class="diag-box" />
+            <text x="93" y="173" text-anchor="middle" class="diagram-label">Index entry / ctid</text>
+            <text x="93" y="192" text-anchor="middle" class="diagram-sub">(block 0, slot 3)</text>
+          </g>
+
+          <!-- ── Right: the 8 KB page ── -->
+          <text x="490" y="26" text-anchor="middle" class="diagram-label" font-weight="700">One 8 KB page (block 0)</text>
+          <rect x="330" y="34" width="300" height="368" rx="6" class="diag-box" fill="none" />
+
+          <!-- header -->
+          <g id="page-header" class="step-el">
+            <rect x="340" y="42" width="280" height="34" rx="4" class="diag-box" />
+            <text x="480" y="63" text-anchor="middle" class="diagram-sub">PageHeaderData (24 B) · pd_lower / pd_upper</text>
+          </g>
+
+          <!-- line-pointer array (slots) -->
+          <text x="344" y="94" class="diagram-sub" font-weight="700">line pointers ▼</text>
+          <g id="slot1" class="step-el">
+            <rect x="340" y="100" width="280" height="22" rx="3" class="diag-box" />
+            <text x="352" y="115" class="diagram-sub">slot #1  →  offset 8140</text>
+          </g>
+          <g id="slot2" class="step-el">
+            <rect x="340" y="124" width="280" height="22" rx="3" class="diag-box" />
+            <text x="352" y="139" class="diagram-sub">slot #2  →  offset 8020</text>
+          </g>
+          <g id="slot3" class="step-el">
+            <rect x="340" y="148" width="280" height="22" rx="3" class="diag-box diag-box-cover" />
+            <text x="352" y="163" class="diagram-sub">slot #3  →  offset 7900</text>
+          </g>
+
+          <!-- free space -->
+          <g id="freespace" class="step-el">
+            <rect x="340" y="176" width="280" height="120" rx="4" class="diag-box" stroke-dasharray="4 4" fill="none" />
+            <text x="480" y="232" text-anchor="middle" class="diagram-sub">free space ("the hole")</text>
+            <text x="480" y="250" text-anchor="middle" class="diagram-sub">= pd_upper − pd_lower</text>
+          </g>
+
+          <!-- tuples grow up from the end -->
+          <text x="344" y="314" class="diagram-sub" font-weight="700">tuples ▲</text>
+          <g id="tuple2" class="step-el">
+            <rect x="340" y="320" width="280" height="26" rx="3" class="diag-box" />
+            <text x="352" y="337" class="diagram-sub">tuple (row 2) @ off 8020</text>
+          </g>
+          <g id="tuple3" class="step-el">
+            <rect x="340" y="350" width="280" height="44" rx="3" class="diag-box diag-box-warn" />
+            <text x="352" y="368" class="diagram-sub">tuple (row 3) @ byte off 7900</text>
+            <text x="352" y="384" class="diagram-sub">xmin · xmax · t_ctid · data…</text>
+          </g>
+
+          <!-- compacted position after VACUUM -->
+          <g id="tuple3-moved" class="step-el">
+            <rect x="340" y="320" width="280" height="44" rx="3" class="diag-box diag-box-result" />
+            <text x="352" y="338" class="diagram-sub">tuple (row 3) slid up @ off 8010</text>
+            <text x="352" y="354" class="diagram-sub">byte offset changed — slot #3 did NOT</text>
+          </g>
+
+          <!-- edges -->
+          <line id="edge-ctid-slot" class="step-el diag-edge" x1="168" y1="178" x2="336" y2="159" marker-end="url(#arrow)" />
+          <line id="edge-slot-tuple" class="step-el diag-edge diag-edge-warn" x1="470" y1="170" x2="470" y2="348" marker-end="url(#arrow)" />
+          <line id="edge-slot-moved" class="step-el diag-edge" x1="500" y1="170" x2="500" y2="318" marker-end="url(#arrow)" />
+
+          <text id="vacuum-note" class="step-el diagram-sub" x="18" y="240" >VACUUM: line pointer #3</text>
+          <text class="step-el diagram-sub" x="18" y="256">rewritten to the new</text>
+          <text class="step-el diagram-sub" x="18" y="272">offset — TID (0,3) still valid</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why the slot indirection is worth it</h3>
+        <p>Reading a row is one level of indirection — block <em>N</em> → slot #<em>K</em> → byte offset — and it exists because the <strong>slot number is stable</strong> while the tuple's <strong>byte offset is not</strong>:</p>
+        <ul>
+          <li><strong>Compaction.</strong> VACUUM slides surviving tuples together to coalesce the hole. Tuples move; each line pointer is <em>rewritten</em> to the new offset — but the <strong>offset numbers stay the same</strong>, so every index entry and <code>ctid</code> citing <code>(N, K)</code> is still valid.</li>
+          <li><strong>No reverse map needed.</strong> If indexes stored the byte offset directly, every in-page compaction or prune would have to find and rewrite every index entry across <em>all</em> indexes on the table (write amplification), and you'd need a nonexistent reverse map from tuple → indexes.</li>
+          <li><strong>Line-pointer states.</strong> Slots carry <code>LP_NORMAL</code> / <code>LP_DEAD</code> / <code>LP_UNUSED</code> / <code>LP_REDIRECT</code> (redirect → another slot) — the machinery behind HOT chains and pruning under MVCC.</li>
+        </ul>
+
+        <h3>The tuple header — where row versions live</h3>
+        <p>Each row is a heap tuple with a ~23-byte header: <code>t_xmin</code> (inserting txn), <code>t_xmax</code> (deleting/locking txn), <code>t_ctid</code> (TID of this tuple <em>or of the next, newer version</em> — the forward pointer chaining an UPDATE to its successor), <code>t_infomask</code>/<code>t_infomask2</code> (flags plus commit-status hint bits), and <code>t_hoff</code> (offset to user data). Because <code>xmin</code>/<code>xmax</code> and the <code>ctid</code> forward pointer live physically in the page, row <em>versions</em> sit in the heap and DELETE/UPDATE cannot free space immediately.</p>
+
+        <h3>Pages vs sectors — the torn-page hazard</h3>
+        <p>Each layer has its own smallest atom, and they don't match: relation → 1&nbsp;GB segment file → 8&nbsp;KB Postgres page (the DB's atom) → filesystem block (~4&nbsp;KB) → device sector (512&nbsp;B or 4&nbsp;KB, the hardware's atom). One 8&nbsp;KB page spans 16 sectors (512&nbsp;B) or 2 (4&nbsp;KB), but the disk only guarantees that <em>one sector</em> is written all-or-nothing. Its defense — <strong>full-page writes</strong> — copies the entire 8&nbsp;KB page into the WAL on its first modification after a checkpoint, so recovery can stamp a known-good image back down before replaying later changes.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating <code>ctid</code> as a stable, persistent row identifier — caching it in an application, a foreign key, or an external system and expecting it to still address the same row later.
+          <pre><code class="lang-sql">-- DON'T: stash a ctid and reuse it as a durable row id
+SELECT ctid FROM accounts WHERE id = 7;   -- (0,3)  ← looks like an address
+-- ...later, after an UPDATE or a VACUUM FULL / CLUSTER...
+SELECT * FROM accounts WHERE ctid = '(0,3)';   -- may be a DIFFERENT row, or gone</code></pre>
+          <p>Why it breaks: two distinct situations change a row's TID. An <strong>UPDATE</strong> writes a <em>new version</em> elsewhere (a new TID) and marks the old one expired — the row didn't "move," a successor was created. And a <strong>rewrite</strong> (<code>VACUUM FULL</code> / <code>CLUSTER</code>) physically relocates live tuples across pages, reassigning their TIDs. (Ordinary lazy VACUUM does <em>not</em> change a live tuple's TID — it only compacts within a page and rewrites the line pointer.) Use the table's real primary key for durable identity; <code>ctid</code> is valid only within a single snapshot.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC — How Postgres Implements Multi-Version Concurrency Control</strong>
+        <span>The next layer up: the <code>xmin</code>/<code>xmax</code>/<code>t_ctid</code> tuple header this page stores is exactly what MVCC reads to decide which row version each transaction can see.</span>
+      </a>
+      <a class="related-card" href="../table-bloat-and-autovacuum/index.html" data-entry="table-bloat-and-autovacuum">
+        <strong>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</strong>
+        <span>The janitor for this drawer: how VACUUM compacts pages, rewrites line pointers, and the Free Space / Visibility Map forks feed it.</span>
+      </a>
+      <a class="related-card" href="../write-ahead-log/index.html" data-entry="write-ahead-log">
+        <strong>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</strong>
+        <span>Where the torn-page hazard is actually defused: <code>pd_lsn</code> and full-page writes are the bridge from this page to crash recovery.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>These same 8 KB pages, cached in shared_buffers before they ever touch disk; the unit of I/O here is the unit of caching there.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>The heap fetch a covering index eliminates is the slot → byte-offset hop shown here; the Visibility Map fork is what lets it be skipped.</span>
+      </a>
+      <a class="related-card" href="../acid-properties/index.html" data-entry="acid-properties">
+        <strong>ACID Properties</strong>
+        <span>Durability and atomicity rest on this layout: WAL-stamped pages and the atomic relfilenode swap behind fast, transactional TRUNCATE.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>Isolation is enforced against the row versions physically stored in these pages via each transaction's snapshot.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The other half of Postgres's concurrency story — strict-2PL locks paired with the MVCC versions that live in this heap.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/storage-page-layout.html" target="_blank" rel="noopener">PostgreSQL Documentation — Database Page Layout</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.postgresql.org/docs/current/storage-file-layout.html" target="_blank" rel="noopener">PostgreSQL Documentation — Database File Layout</a> — fetched 2026-06-17</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql01/03.html" target="_blank" rel="noopener">The Internals of PostgreSQL §1.3 — Internal layout of a heap table file</a> — fetched 2026-06-17</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">Line pointers grow down and tuples grow up. Why is the slot indirection worth it — what breaks or gets expensive if indexes pointed at a tuple's <em>byte offset</em> instead of its <em>slot number</em>?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Nothing important — byte offsets would actually be faster because they skip the slot lookup entirely.</button>
+            <button class="option" data-correct="true">In-page compaction slides tuples to new byte offsets, so every index entry across <em>all</em> indexes on the table would have to be found and rewritten each time (write amplification) — and you'd need a nonexistent tuple→index reverse map. The slot number stays stable, so only the line pointer is rewritten.</button>
+            <button class="option" data-correct="false">Byte offsets overflow past 8 KB, so slots are needed just to fit the address in 4 bytes.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The line pointer is an indirection layer: the TID <code>(block, slot)</code> is stable across in-page moves while the byte offset is not, so compaction rewrites one line pointer instead of chasing down every index entry.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Postgres does heap I/O one 8 KB page at a time, though a device sector is much smaller. Name the correctness hazard on a crash mid-write, and the mechanism that defends against it.</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">A deadlock; the defense is the deadlock detector aborting one transaction.</button>
+            <button class="option" data-correct="true">A torn page — a crash persists some sectors of the new page and leaves others as old bytes, so a single page is part-new/part-old = corruption. The defense is full-page writes: the first post-checkpoint modification copies the whole 8 KB page into the WAL, and recovery stamps that good image back before replaying later changes.</button>
+            <button class="option" data-correct="false">A phantom read; the defense is raising the isolation level to Serializable.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A page spans 16 (or 2) sectors but the disk is only atomic per sector, so the page — not the row — is the unit of crash protection, and full-page writes are why WAL is larger than expected.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A table's file is named by <code>relfilenode</code>, not its OID. Name an operation that changes <code>relfilenode</code>, and explain why that makes <code>TRUNCATE</code> behave the way it does — what does it get to skip?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Any <strong>rewrite</strong> op changes <code>relfilenode</code>: <code>TRUNCATE</code>, <code>CLUSTER</code>, <code>VACUUM FULL</code>, <code>REINDEX</code>, or a type-changing <code>ALTER TABLE</code>. Each builds a <strong>new file and atomically swaps</strong> the table's catalog pointer to it — not an in-place edit. That is why <code>TRUNCATE</code> is fast: it is O(1) in rows, so it skips the per-row scan, per-row WAL, and dead-tuple creation that make <code>DELETE</code> O(n). Yet it is still fully transactional — the swap is one atomic catalog change, so <code>ROLLBACK</code> works.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: TID (block, slot) indirection) ─
+    const steps = [
+      { activate: ['#page-header', '#slot1', '#slot2', '#slot3', '#freespace', '#tuple2', '#tuple3'],
+        explanation: 'Anatomy of one 8 KB page. A fixed 24-byte header, then the line-pointer array growing DOWN from the top (pd_lower), free space in the middle, and tuple data growing UP from the end (pd_upper). They advance toward each other until the hole between them is gone.' },
+      { activate: ['#node-ctid', '#edge-ctid-slot', '#slot3'],
+        explanation: 'An index entry (or a raw ctid) addresses a row as TID (block 0, slot 3). It points at the SLOT NUMBER — line pointer #3 — never at a raw byte position. This is the whole trick: indexes cite a logical slot, not a physical byte.' },
+      { activate: ['#slot3', '#edge-slot-tuple', '#tuple3'],
+        explanation: 'Slot #3 holds the tuple’s current byte offset (7900). Follow it to the row: header (xmin/xmax/t_ctid) plus user data. One hop of indirection — slot → byte offset — separates the logical address from the physical one.' },
+      { activate: ['#slot3', '#tuple3-moved', '#edge-slot-moved', '#vacuum-note'],
+        explanation: 'VACUUM compacts the page: surviving tuples slide together to coalesce the hole, so row 3’s BYTE OFFSET changes (7900 → 8010). But line pointer #3 is simply rewritten to the new offset — the SLOT NUMBER stays #3, so every index entry and ctid citing (0,3) is still valid. That is why the indirection exists.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'mvcc':                     { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'table-bloat-and-autovacuum': { title: 'Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind', summary: 'Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM’s two bits, freezing & XID wraparound, and autovacuum triggers/tuning.' },
+      'write-ahead-log':          { title: 'Write-Ahead Log (WAL) — Crash Recovery & the Durability Guarantee', summary: 'Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints & redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.' },
+      'buffer-pool':              { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+      'covering-indexes':         { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+      'acid-properties':          { title: 'ACID Properties', summary: 'The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the app’s job, isolation as a tunable dial, and the wedding-ceremony model.' },
+      'isolation-levels':         { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'two-phase-locking':        { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres’s MVCC+strict-2PL hybrid.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

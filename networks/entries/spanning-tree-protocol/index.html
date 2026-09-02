@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Spanning Tree Protocol (STP/RSTP) — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific SVG rules (topology diagram only) */
+    .diagram-svg { max-height: 460px; }
+    .diagram-svg .note-text { fill: var(--text); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .port-text { fill: var(--text-muted); font-family: var(--font); font-size: 10px; font-weight: 600; }
+    .diagram-svg .bid-text { fill: var(--text-muted); font-family: var(--font); font-size: 10px; }
+    .diagram-svg .storm-path { stroke: #dc2626; stroke-width: 2.5; fill: none; }
+    .diagram-svg .danger-text { fill: #dc2626; font-family: var(--font); font-size: 11px; font-weight: 600; }
+    .diagram-svg .danger-port { fill: #dc2626; font-family: var(--font); font-size: 10px; font-weight: 700; }
+    .diagram-svg .block-x { stroke: #dc2626; stroke-width: 3; stroke-linecap: round; }
+    .diagram-svg .root-text { fill: var(--accent); font-family: var(--font); font-size: 12px; font-weight: 700; }
+    .diagram-svg .tree-link.active { stroke: var(--accent); stroke-width: 3; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Spanning Tree Protocol (STP/RSTP) — Loop Prevention &amp; Root Bridge Election</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Redundant links between switches are mandatory for availability — and instantly fatal without help. Switches <strong>flood</strong> broadcasts out every port, and an Ethernet frame has <strong>no TTL</strong>: nothing in the header counts hops or expires, so a frame that enters a physical loop circulates and multiplies until the network saturates, in seconds. <strong>Spanning Tree Protocol</strong> keeps the physical redundancy but computes a loop-free logical <em>tree</em> over it, putting the cycle-forming links into standby. This is the protocol that makes a redundant Layer 2 network possible at all.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">stp</span>
+        <span class="badge tag">rstp</span>
+        <span class="badge tag">spanning-tree</span>
+        <span class="badge tag">loop-prevention</span>
+        <span class="badge tag">root-bridge</span>
+        <span class="badge tag">bpdu</span>
+        <span class="badge tag">broadcast-storm</span>
+        <span class="badge tag">bridge-id</span>
+        <span class="badge tag">portfast</span>
+        <span class="badge tag">bpdu-guard</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Broadcast storm</dt>
+        <dd>The failure mode STP exists to prevent. A broadcast (or unknown-unicast) frame enters a physical loop, gets flooded out every other port at each switch, and — because Ethernet has <strong>no TTL</strong> to discard it — never dies. Each pass multiplies the copies, so link utilisation goes exponential and the whole Layer 2 domain stops carrying useful traffic. Two companion failures ride along: the same source MAC keeps arriving on different ports, so every switch's MAC-address table <em>flaps</em> and forwarding decisions become nonsense; and hosts receive duplicate copies of frames, confusing upper layers.</dd>
+
+        <dt>BPDU (Bridge Protocol Data Unit)</dt>
+        <dd>The small multicast control frame switches exchange — by default every 2 seconds — to run the protocol. A BPDU carries essentially "here is who I think the root is, and here is my cost to reach it". Every decision STP makes is derived from comparing received BPDUs; a switch never needs a topology map, only its neighbours' claims.</dd>
+
+        <dt>Bridge ID (BID) and root bridge</dt>
+        <dd>The <strong>Bridge ID</strong> is an 8-byte identifier: a 2-byte <strong>priority</strong> (default 32768) followed by the switch's 6-byte MAC address. All switches elect the single <strong>root bridge</strong> — the reference point the whole tree is built around — as the one with the <strong>lowest BID</strong>. Because priority compares first, it is the intended tuning knob; if every switch keeps the default, the tie falls through to the lowest MAC address.</dd>
+
+        <dt>Path cost</dt>
+        <dd>A bandwidth-derived number assigned per link — faster links are cheaper — which sums along a path. The classic 802.1D values are 100 for 10&nbsp;Mbps, 19 for 100&nbsp;Mbps, 4 for 1&nbsp;Gbps and 2 for 10&nbsp;Gbps. "Distance to the root" always means <em>cumulative path cost</em>, never hop count, so STP naturally prefers a two-hop gigabit path over a one-hop 10&nbsp;Mbps one.</dd>
+
+        <dt>Port roles: root, designated, blocking</dt>
+        <dd>Every port ends up in exactly one role. A non-root switch's single <strong>root port</strong> is its lowest-cost port toward the root — "my best way home" — and forwards. Each network segment elects one <strong>designated port</strong>, the port that forwards traffic onto that segment; all ports on the root bridge are designated by definition. Every remaining port is put into <strong>blocking</strong>: it drops data frames but keeps listening to BPDUs. Blocking exactly the ports that would close a cycle is what turns the graph into a tree.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>Start with the minimal disaster: two switches, two links between them, for redundancy. No protocol running.</p>
+
+      <pre><code class="lang-text">        ┌──────── link A ────────┐
+   [SW1]                          [SW2]
+        └──────── link B ────────┘</code></pre>
+
+      <p>A host on SW1 sends one ARP broadcast. SW1 floods it out both link A and link B. SW2 receives the copy from A and floods it out every other port — including B, back toward SW1. It receives the copy from B and floods it out A. SW1 now has two fresh copies to flood again. Nothing in the Ethernet header decrements, so nothing ever discards them: one frame becomes two, four, eight. Three distinct things break at once.</p>
+
+      <table class="compare">
+        <thead>
+          <tr><th>Failure</th><th>What actually happens</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>Broadcast storm</td><td data-score="20">Copies multiply exponentially and saturate every link; the network is unusable within seconds.</td></tr>
+          <tr><td>MAC table instability</td><td data-score="20">The same source MAC arrives on link A, then B, then A; each switch rewrites its MAC-address table entry every time, so unicast forwarding breaks too.</td></tr>
+          <tr><td>Duplicate delivery</td><td data-score="20">Hosts receive many copies of a single frame, confusing protocols above Layer 2.</td></tr>
+        </tbody>
+      </table>
+
+      <p>Now the interesting case, and the one worth tracing by hand: three switches wired in a triangle. Two of the links are 1&nbsp;Gbps (cost 4), the third — between SW2 and SW3 — is 100&nbsp;Mbps (cost 19). Nobody has configured anything, so all three carry priority 32768 and differ only by MAC address:</p>
+
+      <pre><code class="lang-text">SW1   BID = 32768 : aa:aa:aa:aa:aa:aa      ← lowest MAC
+SW2   BID = 32768 : bb:bb:bb:bb:bb:bb
+SW3   BID = 32768 : cc:cc:cc:cc:cc:cc
+
+SW1 —— 1 Gbps (cost 4) —— SW2
+SW1 —— 1 Gbps (cost 4) —— SW3
+SW2 —— 100 Mbps (cost 19) —— SW3</code></pre>
+
+      <p>The three-step resolution follows mechanically. <strong>First</strong>, the root election: priorities tie at 32768, so the comparison falls through to the MAC address and <strong>SW1 wins on the lowest MAC</strong>. Both of SW1's ports become designated. <strong>Second</strong>, each non-root switch picks its root port by cumulative cost: SW2 can reach the root directly for 4, or via SW3 for 19&nbsp;+&nbsp;4&nbsp;=&nbsp;23, so the direct port wins; SW3 reasons identically. <strong>Third</strong>, the SW2–SW3 segment needs exactly one designated port. Both candidates advertise a root cost of 4 — a perfect tie — so the tiebreak drops to Bridge ID, and SW2 (bb) beats SW3 (cc). SW2's port on that segment becomes designated; <strong>SW3's port has no role left and blocks</strong>. The cycle is broken and the remaining topology is a tree: SW2 — SW1 — SW3.</p>
+
+      <p>Note what the outcome costs. Because the election was accidental, the root landed on whichever switch happens to have the oldest MAC — and all inter-switch traffic is now funnelled through it. On real gear you set this deliberately, and you also handle the access ports where end devices live:</p>
+
+      <pre><code class="lang-text">Switch(config)# spanning-tree vlan 10 root primary   ! make this switch the root (lowers priority)
+Switch(config)# spanning-tree vlan 10 priority 4096  ! ...or set the priority explicitly
+Switch(config)# spanning-tree mode rapid-pvst        ! run the rapid variant
+
+Switch(config-if)# spanning-tree portfast            ! access port: skip the convergence wait
+Switch(config-if)# spanning-tree bpduguard enable    ! ...and shut the port if a BPDU appears
+
+Switch# show spanning-tree vlan 10                   ! who is root, port roles/states, costs</code></pre>
+
+      <p><code>PortFast</code> and <code>BPDU Guard</code> are a pair, never used alone. PortFast declares "a PC cannot create a loop, so send this port straight to forwarding". BPDU Guard enforces the premise: if a BPDU ever arrives on such a port, something that is not a PC is plugged in — a rogue or misplaced switch — and the port is shut down immediately.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Think of the switches as rooms connected by corridors, and a broadcast as a shout that every room dutifully repeats into every corridor except the one it came from. In a network with no cycles, the shout dies out at the edges. Wire the rooms into a ring and the shout comes back around behind itself — and since nobody is counting how many times it has been repeated, it never gets tired. That missing counter is the whole story: at Layer 3, IP carries a TTL that a router decrements until the packet is dropped, so a routing loop wastes bandwidth but self-terminates per packet. Ethernet has nothing equivalent. A Layer 2 loop is permanent.</p>
+
+      <p>STP's answer is not to remove a corridor but to post a guard on it. The switches first agree on one room as the reference point — the root — then each remaining room works out its own cheapest corridor home, and every corridor that would close a ring gets a guard who refuses to pass traffic while still listening for news. Step through the triangle below: the storm first, because that is the motivation, then the election that tames it.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 660 380" aria-label="Three switches in a triangle: first a broadcast storm circulating the loop, then STP electing SW1 as root bridge, each switch choosing a root port by path cost, and SW3 blocking one port to leave a loop-free tree">
+          <defs>
+            <marker id="arrow-storm" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="#dc2626" />
+            </marker>
+          </defs>
+
+          <!-- ── Links ── -->
+          <line id="link-12" class="step-el edge-line tree-link" x1="270" y1="74" x2="140" y2="268" />
+          <line id="link-13" class="step-el edge-line tree-link" x1="390" y1="74" x2="520" y2="268" />
+          <line id="link-23" class="step-el edge-line" x1="180" y1="291" x2="480" y2="291" />
+
+          <!-- link cost labels, adjacent to each link -->
+          <text id="cost-12" class="step-el bid-text" x="196" y="171" text-anchor="end">1 Gbps · cost 4</text>
+          <text id="cost-13" class="step-el bid-text" x="464" y="171" text-anchor="start">1 Gbps · cost 4</text>
+          <text id="cost-23" class="step-el bid-text" x="330" y="281" text-anchor="middle">100 Mbps · cost 19</text>
+
+          <!-- ── Switches ── -->
+          <text id="root-crown" class="step-el root-text" x="330" y="18" text-anchor="middle">★ ROOT BRIDGE — lowest BID</text>
+          <g id="sw1" class="step-el">
+            <rect class="node-rect" x="255" y="28" width="150" height="46" />
+            <text class="node-text" x="330" y="48" text-anchor="middle">SW1</text>
+            <text class="bid-text" x="330" y="64" text-anchor="middle">BID 32768 : aa:aa</text>
+          </g>
+          <g id="sw2" class="step-el">
+            <rect class="node-rect" x="30" y="268" width="150" height="46" />
+            <text class="node-text" x="105" y="288" text-anchor="middle">SW2</text>
+            <text class="bid-text" x="105" y="304" text-anchor="middle">BID 32768 : bb:bb</text>
+          </g>
+          <g id="sw3" class="step-el">
+            <rect class="node-rect" x="480" y="268" width="150" height="46" />
+            <text class="node-text" x="555" y="288" text-anchor="middle">SW3</text>
+            <text class="bid-text" x="555" y="304" text-anchor="middle">BID 32768 : cc:cc</text>
+          </g>
+
+          <!-- ── Port role labels, adjacent to the port they describe ── -->
+          <text id="port-1a" class="step-el port-text" x="280" y="92" text-anchor="start">Designated</text>
+          <text id="port-1b" class="step-el port-text" x="380" y="92" text-anchor="end">Designated</text>
+          <text id="port-2a" class="step-el port-text" x="150" y="256" text-anchor="start">Root port</text>
+          <text id="port-3a" class="step-el port-text" x="510" y="256" text-anchor="end">Root port</text>
+          <text id="port-2b" class="step-el port-text" x="188" y="312" text-anchor="start">Designated</text>
+          <text id="port-3b" class="step-el danger-port" x="472" y="312" text-anchor="end">BLOCKING</text>
+
+          <!-- blocking marker sitting on SW3's port -->
+          <g id="block-x" class="step-el">
+            <line class="block-x" x1="452" y1="283" x2="468" y2="299" />
+            <line class="block-x" x1="468" y1="283" x2="452" y2="299" />
+          </g>
+
+          <!-- ── Storm arrows around the cycle ── -->
+          <g id="storm" class="step-el">
+            <path class="storm-path" d="M 284 88 L 156 278" marker-end="url(#arrow-storm)" />
+            <path class="storm-path" d="M 192 302 L 468 302" marker-end="url(#arrow-storm)" />
+            <path class="storm-path" d="M 508 278 L 380 88" marker-end="url(#arrow-storm)" />
+          </g>
+
+          <!-- ── Interior annotations (one group per step) ── -->
+          <g id="storm-note" class="step-el">
+            <text class="danger-text" x="330" y="132" text-anchor="middle">One broadcast circles forever — Ethernet has NO TTL</text>
+            <text class="danger-text" x="330" y="148" text-anchor="middle">and is copied out every port: 1 → 2 → 4 → 8 …</text>
+          </g>
+          <g id="flap-note" class="step-el">
+            <text class="note-text" x="330" y="180" text-anchor="middle">SW2 sees source aa:aa on port 1, then port 2, then port 1…</text>
+            <text class="note-text" x="330" y="196" text-anchor="middle">MAC table flaps; hosts also get duplicate copies</text>
+          </g>
+          <text id="bpdu-note" class="step-el note-text" x="330" y="110" text-anchor="middle">BPDU every 2 s: “my root is X, my cost to it is Y”</text>
+          <g id="election-note" class="step-el">
+            <text class="note-text" x="330" y="222" text-anchor="middle">Priorities all tie at 32768 → compare MAC</text>
+            <text class="note-text" x="330" y="238" text-anchor="middle">aa:aa is lowest → SW1 is root (nobody chose this)</text>
+          </g>
+          <g id="tie-note" class="step-el">
+            <text class="note-text" x="330" y="336" text-anchor="middle">SW2 and SW3 both reach root at cost 4 — a tie,</text>
+            <text class="note-text" x="330" y="352" text-anchor="middle">so lower BID (bb &lt; cc) takes the designated port</text>
+          </g>
+          <g id="cost-note-2" class="step-el">
+            <text class="bid-text" x="105" y="336" text-anchor="middle">direct = 4</text>
+            <text class="bid-text" x="105" y="350" text-anchor="middle">via SW3 = 23</text>
+          </g>
+          <g id="cost-note-3" class="step-el">
+            <text class="bid-text" x="555" y="336" text-anchor="middle">direct = 4</text>
+            <text class="bid-text" x="555" y="350" text-anchor="middle">via SW2 = 23</text>
+          </g>
+          <g id="tree-note" class="step-el">
+            <text class="root-text" x="330" y="252" text-anchor="middle">Tree: SW2 — SW1 — SW3. No cycle.</text>
+            <text class="note-text" x="330" y="268" text-anchor="middle">Blocked port is standby, still hearing BPDUs</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Port states, and why classic STP is painfully slow</h3>
+        <p>Choosing roles is instant arithmetic; <em>acting</em> on them is not. Classic 802.1D walks a port that is about to forward up through a sequence of timed <strong>port states</strong>, each a stage in how much of the job the port is allowed to do:</p>
+        <pre><code class="lang-text">Blocking (20s)  →  Listening (15s)  →  Learning (15s)  →  Forwarding
+   drops data       processes BPDUs      also learns         normal
+   hears BPDUs      to settle roles      source MACs        operation
+
+                                          total: ~30–50 seconds</code></pre>
+        <p>The intermediate states exist for a good reason: Listening lets the topology settle before anyone commits to forwarding, and Learning populates the MAC-address table without yet forwarding, so the switch does not start life flooding everything. The price is that every topology change — including a link failure that redundancy was supposed to make invisible — costs roughly 30 to 50 seconds of outage on the affected path. For a file transfer that is annoying; for a voice call or a TCP session it is a hard failure.</p>
+
+        <h3>RSTP (802.1w) closes the gap</h3>
+        <p>Rapid Spanning Tree converges in milliseconds to a few seconds, and it is the modern default. The concepts above are unchanged — same root bridge, same Bridge IDs, same path costs, same root and designated ports — so nothing already learned is wasted. What changes is the machinery:</p>
+        <ul>
+          <li>The five states collapse to three: <strong>Discarding</strong>, <strong>Learning</strong>, <strong>Forwarding</strong>.</li>
+          <li>Timers are replaced by an active <strong>proposal/agreement handshake</strong> between neighbours: instead of waiting a fixed 15 seconds hoping the topology has settled, two switches explicitly negotiate that a link may forward.</li>
+          <li>Two new roles are precomputed rather than recalculated on failure: an <strong>alternate port</strong> is a standing backup path to the root, and a <strong>backup port</strong> is a redundant path onto a segment already served. When the primary dies, the replacement is already chosen and can take over almost immediately.</li>
+          <li><strong>Edge ports</strong> — ports facing end devices — go straight to forwarding, formalising what PortFast bolted on.</li>
+        </ul>
+        <p>Two related variants are worth knowing by name. Cisco's <strong>PVST+ / Rapid-PVST+</strong> runs one spanning tree instance <em>per VLAN</em>, which means different VLANs can be given different root bridges and therefore use different links — recovering the bandwidth that a single tree leaves idle. <strong>MSTP</strong> (802.1s) is the standards-based middle ground: one instance per <em>group</em> of VLANs, so you get the same load-distribution benefit without paying for an instance per VLAN.</p>
+
+        <h3>Blocked does not mean disconnected</h3>
+        <p>A blocking port is not administratively down and not unplugged. It drops data frames but continues to receive and process BPDUs, which is exactly how it notices when the active path fails. Unplug the SW1–SW3 link in the worked example and SW3 stops hearing the root through its root port; the protocol recomputes and transitions its blocked port toward forwarding — 30 to 50 seconds under classic STP, milliseconds to seconds under RSTP. That transition <em>is</em> the redundancy the second link was installed for. The fair version of the complaint is narrower: under a single spanning tree the blocked link's <em>bandwidth</em> genuinely sits idle, which is precisely the problem Rapid-PVST+ and MSTP solve by giving different VLANs different trees.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> enabling PortFast on a switch-to-switch link.
+          <pre><code class="lang-text">! SW1 gi0/2 is a trunk to SW2 — someone treated it like an access port
+SW1(config-if)# interface gi0/2
+SW1(config-if)# switchport mode trunk
+SW1(config-if)# spanning-tree portfast          ! ← catastrophic here</code></pre>
+          <p>PortFast means "skip the Listening and Learning wait and forward immediately", and it is safe on an access port only because the premise "a PC cannot form a loop" holds there. On a trunk between switches the premise is false: the port starts forwarding before the topology has been resolved, so it can forward into a loop that STP has not yet blocked — reintroducing the storm the protocol was deployed to prevent. The mitigation is to pair PortFast with BPDU Guard everywhere it is used, so a port that starts hearing BPDUs (the unmistakable signal that a switch, not a host, is attached) is shut down rather than allowed to forward.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> letting the root bridge be elected by accident.
+          <pre><code class="lang-text">! every switch left at the default
+Priority 32768 on the new 10-Gbps core switch
+Priority 32768 on a decade-old access switch in a cupboard   ← lower MAC, so it wins</code></pre>
+          <p>With equal priorities the election falls through to the lowest MAC address, and MAC addresses tend to be lower on older hardware — so the root frequently lands on the oldest, slowest switch in the building. Because every path in the tree is computed relative to the root, this drags inter-switch traffic through the weakest device: a bandwidth bottleneck and a single point of failure chosen by accident. The fix is one line on the switch that should be root — <code>spanning-tree vlan &lt;id&gt; root primary</code>, or an explicit low priority — and it should be part of the standard build, not a remediation.</p>
+        </div>
+
+        <h3>Two more things to keep straight</h3>
+        <p>STP does not prevent loops <em>instantly</em>. It prevents <em>steady-state</em> loops. During convergence — after a link flaps, before all switches agree — a transient loop is genuinely possible, which is one more reason the RSTP convergence window matters. And STP is not gateway redundancy: it operates entirely at Layer 2 to keep the switched topology acyclic. Making a <em>default gateway</em> redundant is a Layer 3 problem solved by protocols such as HSRP or VRRP. The two are complementary, and confusing them leads to networks that survive a switch failure but not a router failure.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../how-switches-work/index.html" data-entry="how-switches-work">
+        <strong>How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter</strong>
+        <span>The flooding behaviour and the MAC-address table are the two mechanisms a loop weaponises — STP is unintelligible without them.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>The frame format is where the missing TTL lives — or rather does not — and where the MAC address that decides a tied root election comes from.</span>
+      </a>
+      <a class="related-card" href="../vlans/index.html" data-entry="vlans">
+        <strong>VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging</strong>
+        <span>Flooding is VLAN-scoped, so loops are too — and per-VLAN spanning trees (PVST+/MSTP) are how blocked links stop being wasted bandwidth.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>IEEE 802.1D — Spanning Tree Protocol</li>
+          <li>IEEE 802.1w — Rapid Spanning Tree Protocol</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">Why is a Layer 2 loop fatal within seconds, when a Layer 3 routing loop merely wastes bandwidth?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Switches forward far faster than routers, so the loop saturates links sooner.</button>
+            <button class="option" data-correct="true">An Ethernet frame has no TTL, so a looping frame is never discarded and is duplicated out every port on each pass; IP's TTL is decremented per router and drops the packet at zero, so a routing loop self-terminates per packet.</button>
+            <button class="option" data-correct="false">Broadcast frames are larger than IP packets, so they consume bandwidth faster.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The difference is a header field, not speed or size. IP carries a TTL that every router decrements until the packet is dropped, so a Layer 3 loop is self-limiting per packet. Ethernet has no hop counter or expiry at all, so the frame circulates forever <em>and</em> multiplies through flooding — exponential growth until saturation. That absence is the entire reason STP has to exist.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Three switches, all left at factory defaults, no STP configuration. Which one becomes the root bridge?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The one with the most ports in the forwarding state, since it has the best connectivity.</button>
+            <button class="option" data-correct="false">The one with the highest aggregate link bandwidth, because path cost is bandwidth-derived.</button>
+            <button class="option" data-correct="true">The one with the lowest Bridge ID — and since all priorities tie at the default 32768, that means the lowest MAC address, which is typically the oldest switch.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The BID is priority followed by MAC, and lowest wins. Path cost and bandwidth play no part in the <em>election</em> — they only decide root ports afterwards. With every priority at 32768 the comparison falls through to the MAC address, so the root is chosen by manufacturing accident.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why is having the root bridge elected by accident a problem, and what is the fix?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Every path in the tree is computed relative to the root, so all inter-switch traffic converges on it. When the lowest MAC address wins by default — usually the oldest switch in the estate — the busiest device in the network becomes the weakest one: a bandwidth bottleneck and a fragile single point of failure, both chosen at random. The fix is to set the priority explicitly on the switch that <em>should</em> be root (typically the core switch): <code>spanning-tree vlan &lt;id&gt; root primary</code>, or a directly configured low priority such as 4096. Because priority is compared before MAC, one deliberate low value overrides the accident entirely.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A port has been blocking for months. Someone unplugs the active link. What happens, and what does that reveal about blocking ports?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The switch stops hearing the root through its root port, STP recomputes the tree, and the blocked port transitions to forwarding — roughly 30–50 seconds under classic 802.1D as it walks the Listening and Learning states, milliseconds to a few seconds under RSTP, which precomputed that port as an alternate and negotiates the change instead of waiting on timers. The reveal is that <strong>blocking is not disconnected</strong>: the port was alive the whole time, dropping data frames but processing BPDUs, which is exactly how it noticed the failure. That standby link taking over is the redundancy the second cable was installed for.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Someone enables PortFast on a trunk between two switches "to speed up convergence". What breaks, and what single feature would have caught the mistake?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>PortFast sends a port straight to forwarding, skipping the Listening and Learning states in which STP resolves roles. That is safe on an access port only because an end device cannot form a loop. On a switch-to-switch trunk the port begins forwarding before the topology is resolved, so it can forward into a cycle that has not been blocked yet — recreating the broadcast storm. <strong>BPDU Guard</strong> is the safeguard: a BPDU arriving on a PortFast-enabled port proves a switch is attached rather than a host, and the port is shut down instead of being trusted. PortFast and BPDU Guard should always be configured together.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (STP: storm → election → blocked port) ──
+    const steps = [
+      { activate: ['#sw1', '#sw2', '#sw3', '#link-12', '#link-13', '#link-23', '#cost-12', '#cost-13', '#cost-23'],
+        explanation: 'Three switches wired in a triangle so that any single link can fail without partitioning the network. Two links are 1 Gbps (path cost 4) and one is 100 Mbps (path cost 19). The redundancy is deliberate — and the triangle is a physical loop.' },
+      { activate: ['#link-12', '#link-13', '#link-23', '#storm', '#storm-note'],
+        explanation: 'With no protocol running, one broadcast is enough. Each switch floods it out every port except the one it arrived on, so the frame circles the triangle — and because an Ethernet frame carries no TTL, nothing ever discards it. Every lap multiplies the copies; the links saturate in seconds.' },
+      { activate: ['#storm', '#flap-note'],
+        explanation: 'The storm is only the loudest failure. The same source MAC now arrives on different ports in turn, so each switch rewrites its MAC-address table entry over and over and unicast forwarding breaks too. Hosts meanwhile receive duplicate copies of every frame.' },
+      { activate: ['#sw1', '#sw2', '#sw3', '#link-12', '#link-13', '#link-23', '#bpdu-note'],
+        explanation: 'STP starts by having every switch multicast BPDUs — roughly every 2 seconds — each claiming a root and advertising its cost to reach it. No switch ever builds a topology map; every decision that follows comes from comparing these claims with neighbours.' },
+      { activate: ['#sw1', '#sw2', '#sw3', '#election-note', '#root-crown'],
+        explanation: 'Election: the lowest Bridge ID wins. Priority is compared first, but all three sit at the default 32768, so the tie falls through to the MAC address and SW1 (aa:aa) becomes root. Nobody chose this — which is exactly why the root should be set deliberately on the switch you want it on.' },
+      { activate: ['#sw2', '#sw3', '#link-12', '#link-13', '#port-2a', '#port-3a', '#cost-note-2', '#cost-note-3'],
+        explanation: 'Each non-root switch picks one root port: its lowest cumulative-cost path home. SW2 can reach the root directly for 4, or via SW3 for 19 + 4 = 23, so the direct link wins. SW3 computes the mirror image. Both root ports forward.' },
+      { activate: ['#sw1', '#port-1a', '#port-1b', '#port-2b', '#link-23', '#tie-note'],
+        explanation: 'Now each segment elects one designated port — the port that forwards onto it. Both of the root bridge’s ports are designated by definition. On the SW2–SW3 segment both candidates advertise a root cost of 4, a perfect tie, so the tiebreak drops to Bridge ID and SW2 (bb) beats SW3 (cc).' },
+      { activate: ['#port-3b', '#block-x', '#link-12', '#link-13', '#sw1', '#sw2', '#sw3', '#tree-note'],
+        explanation: 'SW3’s port on that segment has no role left, so it blocks: it drops data frames but keeps processing BPDUs. The cycle is gone and what remains is a tree, SW2 — SW1 — SW3. The blocked link is standby, not disconnected — pull an active link and STP recomputes and unblocks it.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'how-switches-work': { title: 'How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter', summary: 'Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.' },
+      'ethernet':          { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'vlans':             { title: 'VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging', summary: 'Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

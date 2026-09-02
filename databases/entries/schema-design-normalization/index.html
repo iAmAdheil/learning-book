@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Schema Design — ER Diagrams &amp; Normalization (1NF → BCNF) — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Local styling for the normalization step-reveal table SVG */
+    .diagram-svg .step-el { opacity: 0.28; transition: opacity .35s ease; }
+    .diagram-svg .step-el.active { opacity: 1; }
+    .diagram-svg .tbl-box { rx: 6; }
+    .nf-pill { display:inline-block; font-weight:700; padding:.05rem .5rem; border-radius:999px; font-size:.8rem; letter-spacing:.02em; }
+    .anomaly-grid { display:grid; gap:.75rem; margin:1rem 0; }
+    .anomaly-grid > div { border-left:3px solid var(--accent, #6c8cff); padding:.5rem .85rem; background:rgba(120,140,255,.06); border-radius:0 6px 6px 0; }
+    .mnemonic { text-align:center; font-style:italic; line-height:1.9; }
+    .mnemonic strong { font-style:normal; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Schema Design — ER Diagrams &amp; Normalization (1NF → BCNF)</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Normalization is the discipline of structuring tables so that every fact lives in exactly one place. Each normal form — 1NF through BCNF — is just a precise way of saying "this column is in the wrong table," and getting it right kills the update, insertion, and deletion anomalies that silently corrupt data.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">schema-design</span>
+        <span class="badge tag">normalization</span>
+        <span class="badge tag">functional-dependency</span>
+        <span class="badge tag">1nf→bcnf</span>
+        <span class="badge tag">anomalies</span>
+        <span class="meta-dates">Created 2026-05-31 · Updated 2026-05-31</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>ER diagram</dt>
+        <dd>A design-time sketch of the domain before <code>CREATE TABLE</code>: <strong>entities</strong> (nouns → tables), <strong>attributes</strong> (adjectives → columns), and <strong>relationships</strong> (verbs → foreign keys or junction tables).</dd>
+
+        <dt>Cardinality</dt>
+        <dd>How many of each side a relationship connects — 1:1, 1:N, or M:N. It dictates where the foreign key goes: on the many side for 1:N, in a junction table for M:N.</dd>
+
+        <dt>Functional dependency (X → Y)</dt>
+        <dd>"If you know X, you know exactly one Y." The engine of normalization: examine every dependency and check whether its determinant (left side) is a proper key.</dd>
+
+        <dt>The three anomalies</dt>
+        <dd>Update, insertion, and deletion bugs that all stem from one cause — facts about different things crammed into one table. Each normal form exists to eliminate one.</dd>
+
+        <dt>Normal forms (1NF → BCNF)</dt>
+        <dd>A ladder of rules, each assuming the previous: atomic cells (1NF), no partial dependency (2NF), no transitive dependency (3NF), every determinant a superkey (BCNF).</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>See the disease before the cure. Here is a single table that stores everything about course enrollments — student, course, and instructor — all crammed together:</p>
+      <pre><code class="lang-text">enrollments_bad
+student_id | student_name | course_id | course_title | instructor
+1          | Abhishek     | CS101     | Databases    | Dr. Codd
+1          | Abhishek     | CS102     | Networks     | Dr. Cerf
+2          | Maria        | CS101     | Databases    | Dr. Codd</code></pre>
+
+      <p>This shape has three structural bugs, and each normal form exists to kill exactly one of them:</p>
+      <div class="anomaly-grid">
+        <div><strong>Update anomaly</strong> — "Databases" is stored twice. Rename the course and you must update N rows; miss one and the data contradicts itself. <em>The same fact lives in more than one place.</em></div>
+        <div><strong>Insertion anomaly</strong> — you can't add a new course (<code>CS103</code>) until a student enrolls, because there's no row to put it in without a <code>student_id</code>. <em>Forced to invent fake data to record a real fact.</em></div>
+        <div><strong>Deletion anomaly</strong> — if Maria (the only <code>CS101</code> student) drops it, deleting her row also erases that CS101 exists and who teaches it. <em>Deleting one fact destroys an unrelated one.</em></div>
+      </div>
+
+      <p>The cure is to split facts about different <em>things</em> — students, courses, enrollments — into their own tables, each keyed by what those facts actually depend on. A <strong>weak entity</strong> like an order line item, which has no identity of its own, borrows its parent's key:</p>
+      <pre><code class="lang-sql">CREATE TABLE order_items (
+    order_id    BIGINT REFERENCES orders(id),
+    line_no     INT,
+    product_id  BIGINT REFERENCES products(id),
+    quantity    INT NOT NULL CHECK (quantity &gt; 0),
+    PRIMARY KEY (order_id, line_no)   -- identity borrowed from the parent
+);</code></pre>
+      <p>The composite primary key <code>(order_id, line_no)</code> says a line item is only meaningful inside its order — exactly what "weak entity" means.</p>
+
+      <p class="mnemonic">William Kent's mnemonic covers 1NF→3NF: every non-key attribute must depend on<br>
+      <strong>the key</strong> (1NF) · <strong>the whole key</strong> (2NF) · <strong>nothing but the key</strong> (3NF).</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of normalization as walking one messy table through a series of checkpoints. At each checkpoint you ask a single question — <em>"does every column depend on the key, the whole key, and nothing but the key?"</em> — and whenever a column fails, you carve it off into a new table keyed by whatever it <em>actually</em> depends on. Step through the transformation below: watch the redundant columns peel away one normal form at a time.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">5</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 360" aria-label="A wide table being decomposed through 1NF, 2NF, 3NF, and BCNF">
+          <defs>
+            <style>
+              .tlabel { font: 600 13px sans-serif; fill: var(--svg-fg, #222); }
+              .clabel { font: 11px monospace; fill: var(--svg-fg, #222); }
+              .nflabel { font: 700 13px sans-serif; fill: #fff; }
+              .badtext { font: 700 11px sans-serif; fill: #d9534f; }
+            </style>
+          </defs>
+
+          <!-- STEP 1: original wide table (1NF focus: atomic) -->
+          <g id="g-1nf" class="step-el">
+            <rect class="tbl-box" x="20" y="30" width="320" height="74" fill="rgba(217,83,79,.12)" stroke="#d9534f" stroke-width="1.5"/>
+            <text class="tlabel" x="30" y="50">enrollments_bad</text>
+            <text class="clabel" x="30" y="70">student_id, course_id | name | title | instr</text>
+            <text class="badtext" x="30" y="90">phone = "555-1234, 555-9999"  ✗ not atomic</text>
+          </g>
+
+          <!-- STEP 2: 2NF split — course_title off composite key -->
+          <g id="g-2nf" class="step-el">
+            <rect class="tbl-box" x="360" y="30" width="260" height="58" fill="rgba(108,140,255,.12)" stroke="#6c8cff" stroke-width="1.5"/>
+            <text class="tlabel" x="370" y="50">courses</text>
+            <text class="clabel" x="370" y="70">course_id (PK) | course_title</text>
+            <text class="badtext" x="370" y="20">course_id → title  was partial dep ✗ 2NF</text>
+            <line x1="340" y1="60" x2="360" y2="60" stroke="#6c8cff" stroke-width="2"/>
+          </g>
+
+          <!-- STEP 3: 3NF split — dept_name off non-key dept_id -->
+          <g id="g-3nf" class="step-el">
+            <rect class="tbl-box" x="360" y="110" width="260" height="58" fill="rgba(92,184,92,.12)" stroke="#5cb85c" stroke-width="1.5"/>
+            <text class="tlabel" x="370" y="130">departments</text>
+            <text class="clabel" x="370" y="150">dept_id (PK) | dept_name</text>
+            <text class="badtext" x="370" y="184">id→dept_id→name  transitive ✗ 3NF</text>
+            <line x1="340" y1="140" x2="360" y2="140" stroke="#5cb85c" stroke-width="2"/>
+          </g>
+
+          <!-- STEP 4: the clean core table that remains -->
+          <g id="g-core" class="step-el">
+            <rect class="tbl-box" x="20" y="130" width="320" height="74" fill="rgba(92,184,92,.10)" stroke="#5cb85c" stroke-width="1.5"/>
+            <text class="tlabel" x="30" y="150">enrollments</text>
+            <text class="clabel" x="30" y="170">student_id, course_id (PK) | grade</text>
+            <text class="clabel" x="30" y="190">+ FK course_id, employees.dept_id</text>
+          </g>
+
+          <!-- STEP 5: BCNF edge case — overlapping candidate keys -->
+          <g id="g-bcnf" class="step-el">
+            <rect class="tbl-box" x="20" y="240" width="600" height="90" fill="rgba(240,173,78,.12)" stroke="#f0ad4e" stroke-width="1.5"/>
+            <text class="tlabel" x="30" y="262">court_bookings  — candidate keys (court, start) AND (rate_type, start)</text>
+            <text class="clabel" x="30" y="284">court | start_time | rate_type</text>
+            <text class="badtext" x="30" y="306">rate_type → court, but rate_type is not a superkey ✗ BCNF</text>
+            <text class="clabel" x="30" y="322">passes 3NF only because court is a prime attribute — BCNF closes the loophole</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">1NF — atomic values. A cell like phone = "555-1234, 555-9999" can't be indexed, JOINed, or constrained. Fix: one row per number in a separate phones table.</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p><strong>3NF is the sweet spot.</strong> Production schemas target 3NF, occasionally BCNF. 4NF and 5NF are mostly academic — you will rarely justify them in a real design.</p>
+
+        <p><strong>BCNF vs 3NF — the loophole.</strong> 3NF permits a dependency <code>X → Y</code> when <code>Y</code> is a <em>prime</em> attribute (part of some candidate key) even if <code>X</code> is not a superkey. BCNF closes this: <em>every</em> determinant must be a superkey, no exceptions. It only bites when a table has multiple overlapping composite candidate keys — rare in practice, common in interviews.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> caching a derived value into a normalized table without owning its synchronization — "I'll just store <code>dept_name</code> next to <code>dept_id</code> so I avoid a JOIN."
+          <pre><code class="lang-text">employees
+employee_id | name  | dept_id | dept_name
+1           | Asha  | 7       | Sales
+2           | Ben   | 7       | Sales      ← same fact, second copy</code></pre>
+          <p>This re-introduces the transitive dependency <code>employee_id → dept_id → dept_name</code> and with it the update anomaly: rename department 7 and you must touch every employee row in it. That can be a legitimate <em>denormalization</em> choice — but only when reads genuinely demand it and you've accepted the burden of keeping the copy in sync (e.g. via a trigger). Doing it by accident is just a 3NF violation.</p>
+        </div>
+
+        <p><strong>"Atomic" is judgment, not law.</strong> Is <code>address</code> one column or five? It depends on whether you ever query <em>by city</em>. Postgres arrays and JSONB deliberately relax 1NF — that's a denormalization choice, not a mistake. Normalization serves your access patterns, not the reverse.</p>
+
+        <p><strong>Interview trap — name the violation, not just the fix.</strong> "That's a transitive dependency, breaks 3NF." "Partial dependency on a composite key, breaks 2NF." Knowing how to split the table isn't enough; you have to name the disease.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>The keys, constraints, and 1:N/M:N/1:1 relationships that normalization operates on — the substrate beneath every normal form.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization</strong>
+        <span>The deliberate counterweight: when read speed justifies trading away a normal form and re-introducing controlled redundancy.</span>
+      </a>
+      <a class="related-card" href="../data-models-overview/index.html" data-entry="data-models-overview">
+        <strong>Data Models Overview</strong>
+        <span>How the relational model — where normalization lives — compares to document, key-value, columnar, and graph models, and how to pick by access pattern.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://en.wikipedia.org/wiki/Database_normalization" target="_blank" rel="noopener">Wikipedia — Database normalization</a> — fetched 2026-05-31</li>
+          <li><a href="https://en.wikipedia.org/wiki/Third_normal_form" target="_blank" rel="noopener">Wikipedia — Third normal form</a> — fetched 2026-05-31</li>
+          <li><a href="https://en.wikipedia.org/wiki/Boyce%E2%80%93Codd_normal_form" target="_blank" rel="noopener">Wikipedia — Boyce–Codd normal form</a> — fetched 2026-05-31</li>
+          <li><a href="https://en.wikipedia.org/wiki/Entity%E2%80%93relationship_model" target="_blank" rel="noopener">Wikipedia — Entity–relationship model</a> — fetched 2026-05-31</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">A <code>books</code> table holds <code>(book_id, author_id, author_name)</code> with one author per book. Which normal form is violated?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">2NF — partial dependency</button>
+            <button class="option" data-correct="true">3NF — transitive dependency</button>
+            <button class="option" data-correct="false">1NF — non-atomic value</button>
+            <button class="option" data-correct="false">None — it's already in BCNF</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>book_id → author_id → author_name</code>: the determinant <code>author_id</code> is a non-key column and <code>author_name</code> is non-prime — a transitive dependency that breaks 3NF.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does 2NF only matter when a table has a composite primary key?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">A partial dependency needs the determinant to be a proper subset of a candidate key, which requires the key to have ≥2 columns</button>
+            <button class="option" data-correct="false">Single-column keys can't have foreign keys pointing at them</button>
+            <button class="option" data-correct="false">2NF only applies to tables created with <code>CREATE TABLE AS</code></button>
+            <button class="option" data-correct="false">Atomic values are impossible with a single-column key</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A partial dependency means a column depends on <em>part</em> of the key — only possible when the key has 2+ attributes. A single-column PK satisfies 2NF for free.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What's the one-sentence difference between 3NF and BCNF — and when does it actually bite?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>3NF tolerates a non-superkey determinant <em>if</em> the dependent attribute is prime; BCNF requires the determinant to be a superkey regardless. It bites when a table has multiple overlapping composite candidate keys (e.g. court bookings with keys <code>(court, start)</code> and <code>(rate_type, start)</code>).</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Pick the update anomaly and explain how splitting the table eliminates it.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>An update anomaly forces a duplicated value to be changed across every row that holds it — miss one and the data contradicts itself. Splitting the table moves that fact into a single cell of its own table, so there's exactly one place to update and no way to leave a stale copy behind.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused for SOME calibration, kept for safety) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    document.querySelectorAll('td[data-score]').forEach(cell => {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls ──────────────────────────────────────
+    const steps = [
+      { activate: ['#g-1nf'],
+        explanation: '1NF — atomic values. A cell like phone = "555-1234, 555-9999" can\'t be indexed, JOINed, or constrained. Fix: one row per number in a separate phones table. (Postgres arrays/JSONB deliberately relax this as a denormalization choice.)' },
+      { activate: ['#g-1nf', '#g-2nf'],
+        explanation: '2NF — the whole key. With PK (student_id, course_id), the FD course_id → course_title depends on only PART of the key: a partial dependency. Fix: move course_title into a courses table keyed by course_id. Only ever bites with composite keys.' },
+      { activate: ['#g-core', '#g-3nf'],
+        explanation: '3NF — nothing but the key. employee_id → dept_id → dept_name is a transitive dependency: a non-key column (dept_id) determines another non-key column (dept_name). Fix: split off a departments table; the core table keeps dept_id as a foreign key.' },
+      { activate: ['#g-core', '#g-2nf', '#g-3nf'],
+        explanation: 'The clean result: each fact now has exactly one home. The original wide table has decomposed into enrollments, courses, and departments, joined by foreign keys. Every column depends on the key, the whole key, and nothing but the key.' },
+      { activate: ['#g-bcnf'],
+        explanation: 'BCNF — the strict version. court_bookings has overlapping candidate keys (court, start) and (rate_type, start). The FD rate_type → court has a non-superkey determinant, so it violates BCNF — even though 3NF lets it slide because court is a prime attribute. Rare, but a classic interview trap.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'relational-data-model': {
+        title: 'Relational Data Model',
+        summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.'
+      },
+      'denormalization': {
+        title: 'Denormalization — When and Why to Break Normalization Rules',
+        summary: 'Trading write complexity for read speed: counter columns, redundant copies, materialized views, the consistency burden, and the denormalize-only-when framework.'
+      },
+      'data-models-overview': {
+        title: 'Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph',
+        summary: 'The five data models, how to pick by access pattern, relational-vs-document decision tests, and what Mongoose populate / $lookup really do.'
+      },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

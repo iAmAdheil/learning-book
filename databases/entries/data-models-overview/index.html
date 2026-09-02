@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Data Models Overview — Databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← Databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A data model is the shape your data takes — in your head and on disk — and that shape decides what is cheap, expensive, or outright impossible. The relational model is just one of five common options, and production engineers pick the model to match the <strong>access pattern</strong> (how you read and write), never the reverse.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">data-models</span>
+        <span class="badge tag">nosql</span>
+        <span class="badge tag">polyglot-persistence</span>
+        <span class="badge tag">system-design</span>
+        <span class="meta-dates">Created 2026-05-29 · Updated 2026-05-29</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <p>The unifying tension behind every model is one question: do you store data the way it is <em>logically true</em> (normalized, no duplication → flexible queries, but reads must reassemble via joins), or the way it is <em>physically read</em> (denormalized / aggregated → fast for the target pattern, worse at everything else)?</p>
+      <dl class="term-list">
+        <dt>Relational</dt>
+        <dd>Normalized tables connected by foreign keys, queried with SQL. Flexible ad-hoc queries, ACID transactions, engine-enforced integrity — but joins and sharding get hard at scale. The correct default for most apps. (PostgreSQL, MySQL.)</dd>
+
+        <dt>Document</dt>
+        <dd>Self-contained JSON aggregates: store together what you read together. One read fetches a whole object, maps cleanly to code, shards well — but duplication creeps in and cross-document joins are weak. (MongoDB, Firestore, Couchbase.)</dd>
+
+        <dt>Key-Value</dt>
+        <dd>A giant distributed hash map; the database knows nothing about the value. O(1), blazingly fast, trivially scalable — but you can <em>only</em> query by exact key. A document store is essentially a key-value store that can also index the value's contents. (Redis, Memcached, etcd.)</dd>
+
+        <dt>Columnar</dt>
+        <dd>Logically tables, but stored column-by-column. An aggregate over one column touches only that column (far less I/O) and single-type columns compress 10x+. Terrible for single-row OLTP. (ClickHouse, Redshift, Snowflake, Parquet, DuckDB.)</dd>
+
+        <dt>Graph</dt>
+        <dd>Nodes and edges where relationships are first-class stored objects. Wins at deep traversal via <strong>index-free adjacency</strong> — each node stores its own edges. Niche and hard to shard. (Neo4j, Neptune.)</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The sharpest real-world decision is Relational vs Document, because both are general-purpose — almost anything can be modeled in either. So the question is never "which <em>can</em> store this?" but "which makes my dominant access pattern cheap, and my critical invariants safe?" Take one blog domain, modeled both ways.</p>
+
+      <p><strong>Relational</strong> — every fact stored exactly once:</p>
+      <pre><code class="lang-sql">authors(id, name)
+posts(id, author_id, title, body)
+comments(id, post_id, author_id, body)
+tags(id, name)
+post_tags(post_id, tag_id)          -- M:N junction</code></pre>
+
+      <p><strong>Document</strong> — one post embeds everything you render together:</p>
+      <pre><code class="lang-json">{
+  "_id": "post_42",
+  "title": "Why columnar storage is fast",
+  "author": { "id": "a_9", "name": "Sam" },   // name copied in
+  "tags": ["databases", "olap"],
+  "comments": [
+    { "author": { "id": "a_3", "name": "Lee" }, "body": "Great post" }
+  ]
+}</code></pre>
+
+      <p>The same operations feel completely different depending on the model:</p>
+      <table class="ops-table">
+        <thead><tr><th>Operation</th><th>Relational</th><th>Document</th></tr></thead>
+        <tbody>
+          <tr><td>Render one post page</td><td>joins across 5 tables</td><td>one read by id ✅</td></tr>
+          <tr><td>All posts by author <code>a_9</code></td><td><code>WHERE author_id</code> ✅</td><td>hard — author buried in docs</td></tr>
+          <tr><td>All comments Sam made anywhere</td><td><code>WHERE author_id</code> ✅</td><td>brutal — scattered across docs</td></tr>
+          <tr><td>Sam changes his name</td><td>update one row ✅</td><td>update every doc he appears in ❌</td></tr>
+          <tr><td>Top 10 tags by count</td><td>one <code>GROUP BY</code> ✅</td><td>awkward cross-doc aggregation</td></tr>
+          <tr><td>New unplanned query</td><td>just write SQL ✅</td><td>often reshape the docs</td></tr>
+        </tbody>
+      </table>
+      <p>Document is spectacular for the access pattern it was designed around and clumsy for everything else. Relational is mediocre at nothing and stays flexible for queries not yet imagined. That asymmetry is the whole decision.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of the five models not as competitors but as specialists. Each one made a trade: it gave up something the relational model has (joins, strict schema, strong consistency) to gain something else (scale, flexibility, raw speed for one pattern). The heatmap below scores each model on the dimensions that matter — greener is stronger. Notice that no row is all-green: every model has a deliberate weak spot, and your job is to match its <em>cheap</em> things to the things you do most.</p>
+
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Model</th>
+            <th>Ad-hoc queries</th>
+            <th>Aggregate read by id</th>
+            <th>Horizontal scale</th>
+            <th>Deep traversal</th>
+            <th>Built-in integrity</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Relational</strong></td>
+            <td data-score="95">Excellent</td>
+            <td data-score="45">Needs joins</td>
+            <td data-score="35">Hard</td>
+            <td data-score="30">Slow w/ depth</td>
+            <td data-score="95">Native (ACID)</td>
+          </tr>
+          <tr>
+            <td><strong>Document</strong></td>
+            <td data-score="35">One pattern</td>
+            <td data-score="95">One read</td>
+            <td data-score="85">Shards well</td>
+            <td data-score="25">Weak joins</td>
+            <td data-score="30">App-enforced</td>
+          </tr>
+          <tr>
+            <td><strong>Key-Value</strong></td>
+            <td data-score="10">Key only</td>
+            <td data-score="98">O(1) get</td>
+            <td data-score="95">Trivial</td>
+            <td data-score="10">None</td>
+            <td data-score="20">None</td>
+          </tr>
+          <tr>
+            <td><strong>Columnar</strong></td>
+            <td data-score="70">Analytics only</td>
+            <td data-score="20">Reassembles row</td>
+            <td data-score="80">Scales scans</td>
+            <td data-score="15">N/A</td>
+            <td data-score="40">Limited</td>
+          </tr>
+          <tr>
+            <td><strong>Graph</strong></td>
+            <td data-score="55">Pattern queries</td>
+            <td data-score="50">Node by id</td>
+            <td data-score="30">Hard to shard</td>
+            <td data-score="98">Index-free adjacency</td>
+            <td data-score="60">Relationship-typed</td>
+          </tr>
+        </tbody>
+      </table>
+      <p class="caption">Scores are relative cost profiles, not benchmarks — the point is the <em>shape</em> of each row. "NoSQL" is the umbrella over the bottom four; each traded a relational guarantee for one standout strength.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <h3>Why columnar is fast for analytics but bad for single rows</h3>
+        <p>A row store keeps each row's columns contiguous; a column store keeps all values of one column contiguous. For <code>SELECT AVG(salary)</code> over a 50-column <code>employees</code> table, the column store reads only the salary column — roughly 50x less I/O than a row store, which must read every full row to extract one field. Single-type columns also compress extremely well, cutting I/O further. Fetching or updating one full row is the exact opposite: the column store must visit every column file to reassemble or write that one row. So columnar = analytics/OLAP; row = OLTP.</p>
+
+        <h3>Index-free adjacency: why graph wins at friends-of-friends-of-friends</h3>
+        <p>Relational is a giant phone book: to find a friend's friends you go back to the front and look each one up again — every hop is a fresh search through the entire book. Graph is a contacts app where each person's card has direct tappable links to their friends' cards. Trace it with 10 friends each across 100M people:</p>
+        <pre><code class="lang-text">Relational friendships table        Graph (index-free adjacency)
+Hop1: lookup me → 10                 Hop1: follow 10 pointers
+Hop2: 10 lookups → 100               Hop2: follow 100 pointers
+Hop3: 100 lookups → 1,000            Hop3: follow 1,000 pointers
+  (each lookup indexes 100M rows)      (cost independent of dataset size)</code></pre>
+        <p>For a single hop relational is perfectly fine — the gap opens with depth.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating Mongoose <code>ref</code> + <code>.populate()</code> as a database join.
+          <pre><code class="lang-js">// Looks like a join. It is NOT.
+const posts = await Post.find().populate('author');
+// Query #1: db.posts.find(...)            → posts (each with an author ObjectId)
+// Mongoose collects the author ids
+// Query #2: db.authors.find({_id:{$in:[...]}})  → those authors
+// Mongoose stitches them together IN YOUR NODE PROCESS</code></pre>
+          <p>The join happens in app memory, not the database. It is one extra query <em>per populated path</em> (batched via <code>$in</code>), not per document — so <code>populate('author')</code> over 100 posts is 2 queries, not 101. But chaining <code>.populate('author').populate('comments').populate('tags')</code> is 4 queries, and a naive populate-in-a-loop is exactly how the N+1 problem appears. MongoDB <em>does</em> have a real server-side join — <code>$lookup</code> (aggregation, v3.2) — but it is a bolt-on that is generally less efficient and historically limited (e.g. in sharded setups); guidance still favors embedding on hot paths.</p>
+        </div>
+        <p><strong>Diagnostic:</strong> if you reach for <code>populate</code>/<code>$lookup</code> on most queries, your access pattern is relational — you picked document and are fighting it. The boundary is genuinely blurring (Postgres <code>JSONB</code> stores documents; MongoDB added transactions and <code>$lookup</code>), but the default cost profile still holds: relational makes joins and integrity cheap while aggregate reads need assembly; document makes aggregate reads cheap while joins and integrity are expensive.</p>
+
+        <h3>Three principles for an interview or design review</h3>
+        <ol>
+          <li><strong>Model follows access pattern.</strong> Decide how you read and write first, then pick the model. Picking trendy tech and later discovering you need joins is the classic mistake.</li>
+          <li><strong>"NoSQL" is not one thing.</strong> It is an umbrella over document + key-value + columnar + graph. Always ask "which model, and what did it trade away?"</li>
+          <li><strong>Polyglot persistence is normal.</strong> Real systems mix: Postgres (core transactional) + Redis (cache/sessions) + ClickHouse (analytics) + maybe Neo4j (a recommendation feature) — one app, several models, each matched to its access pattern. Keeping them in sync is what CDC/outbox and cache-invalidation patterns solve.</li>
+        </ol>
+        <p><strong>Senior default:</strong> when unsure, choose relational — it adapts to query patterns you did not anticipate, and you can always denormalize later (it is much harder to un-bake a wrong document model).</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>The default model in depth — tables, keys, and the 1:N / M:N / 1:1 relationships this overview compares against.</span>
+      </a>
+      <a class="related-card" href="../schema-design-normalization/index.html" data-entry="schema-design-normalization">
+        <strong>Schema Design — ER Diagrams &amp; Normalization</strong>
+        <span>The normalize-vs-denormalize tension made concrete: how to model entities and store each fact exactly once.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://dataintensive.net/" target="_blank" rel="noopener">Designing Data-Intensive Applications (Kleppmann) — Ch. 2, Data Models and Query Languages</a> — fetched 2026-05-29</li>
+          <li><a href="https://mongoosejs.com/docs/api/query.html" target="_blank" rel="noopener">Mongoose Docs — Query.prototype.populate()</a> — fetched 2026-05-29</li>
+          <li><a href="https://www.mongodb.com/docs/manual/reference/operator/aggregation/lookup/" target="_blank" rel="noopener">MongoDB Docs — $lookup (aggregation)</a> — fetched 2026-05-29</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">What is the one-sentence difference between a document store and a key-value store?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">A document store is faster; a key-value store is slower.</button>
+            <button class="option" data-correct="true">A document store understands and can index the value's contents; a key-value store treats the value as an opaque blob you can only fetch by key.</button>
+            <button class="option" data-correct="false">A document store uses SQL; a key-value store uses NoSQL.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A document store is essentially a key-value store that can also look inside and index the value — that indexing is the whole difference.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A teammate says "use MongoDB, it scales better." What is your first question?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">"What is our dominant access pattern — do we read self-contained aggregates by id, or query the same facts many ways and need joins/integrity?"</button>
+            <button class="option" data-correct="false">"How much RAM does the server have?"</button>
+            <button class="option" data-correct="false">"Does it support JSON?"</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Model follows access pattern. "Scales better" is meaningless without knowing how you read and write — and what integrity you need the engine to guard.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why is columnar storage fast for <code>SELECT AVG(salary)</code> but worse for fetching one full row?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Columnar stores all values of one column contiguously, so an aggregate over the salary column reads only that column (≈50x less I/O on a 50-column table, plus single-type compression). Fetching one full row is the opposite: the engine must visit every column file to reassemble that single row. Hence columnar = OLAP/analytics, row = OLTP.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Is Mongoose <code>populate</code> a database join, and where does the work happen?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>No — it is an application-level join. Mongoose runs the main query, collects the referenced ids, runs a second batched query (<code>$in</code>) per populated path, and stitches the results together in your Node process. The join happens in app memory, not the database. (MongoDB's real server-side join is <code>$lookup</code>; SQL's <code>JOIN</code> is native and optimizer-planned.)</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      paintHeatmap();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function paintHeatmap() {
+      document.querySelectorAll('td[data-score]').forEach(cell => {
+        const score = +cell.dataset.score;
+        cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+      });
+    }
+    paintHeatmap();
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (unused for this entry — heatmap visual) ─
+    const steps = [];
+    let currentStep = 0;
+    const stepTotal = document.getElementById('step-total');
+    if (steps.length && stepTotal) { /* no-op */ }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'relational-data-model': {
+        title: 'Relational Data Model',
+        summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.'
+      },
+      'schema-design-normalization': {
+        title: 'Schema Design — ER Diagrams & Normalization (1NF → BCNF)',
+        summary: 'ER modeling and normalization 1NF→BCNF via functional dependencies and the three anomalies.'
+      }
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', () => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

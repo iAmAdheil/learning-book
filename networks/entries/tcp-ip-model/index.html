@@ -1,0 +1,639 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific diagram rules — fused mapping + hourglass SVG */
+    .diagram-svg .col-head { fill: var(--text-muted); font-family: var(--font); font-size: 10.5px; font-weight: 700; letter-spacing: .06em; }
+    .diagram-svg .brace { stroke: var(--text-muted); stroke-width: 1.5; fill: none; transition: stroke 300ms ease; }
+    .diagram-svg .brace.active { stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .funnel { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .funnel.active { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .waist-rect { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; rx: 6; }
+    .diagram-svg .wire { stroke: var(--border); stroke-width: 1.25; fill: none; transition: stroke 200ms ease, stroke-width 200ms ease; }
+    .diagram-svg .wire.lit { stroke: var(--accent); stroke-width: 2.5; }
+    .diagram-svg .proto { cursor: pointer; }
+    .diagram-svg .proto:hover .node-rect, .diagram-svg .proto.lit .node-rect { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .divider { stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .seam { stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .hourglass-hint { font-size: 0.85rem; color: var(--text-muted); margin-top: 0.4rem; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">The <strong>TCP/IP model</strong> is the layered stack the actual internet is built on. Where OSI is the idealized seven-layer <em>reference map</em>, TCP/IP is the <em>territory</em> — the leaner four-layer stack standardized in RFC 1122 that really ships, and where real things like TLS and sockets have crisp homes. The two models agree exactly in the middle and differ only at the edges. And the reason the whole thing scaled is a single design property: an <strong>hourglass</strong> with one narrow waist — IP — that everything funnels through.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">tcp-ip-model</span>
+        <span class="badge tag">osi-model</span>
+        <span class="badge tag">layering</span>
+        <span class="badge tag">hourglass</span>
+        <span class="badge tag">narrow-waist</span>
+        <span class="badge tag">ip</span>
+        <span class="badge tag">sockets</span>
+        <span class="badge tag">tls</span>
+        <span class="meta-dates">Created 2026-07-07 · Updated 2026-07-07</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>TCP/IP model</dt>
+        <dd>The layered organization of the deployed internet, defined in <strong>RFC 1122</strong> (1989) as <strong>four</strong> layers — Application, Transport, Internet, Link. Most textbooks teach a <strong>five</strong>-layer variant that splits Link into Data Link + Physical. The two are the same stack with one extra seam, not a disagreement. Note that "TCP/IP" also names the <em>protocol suite</em> (TCP, IP, UDP, ICMP, ARP…); context disambiguates.</dd>
+
+        <dt>Application layer</dt>
+        <dd>The top layer: the protocols programs actually speak — HTTP, DNS, SMTP, SSH — <em>plus</em> everything OSI would have called Session and Presentation. TCP/IP gives those no dedicated layers, so encoding, encryption and session management are simply the application's own responsibility. This is why <strong>TLS</strong> lives here rather than in a layer of its own.</dd>
+
+        <dt>Transport layer &amp; the socket boundary</dt>
+        <dd>End-to-end delivery between <em>processes</em>, addressed by port number: <strong>TCP</strong> (ordered, reliable, connection-oriented) or <strong>UDP</strong> (unordered, best-effort, connectionless). The <strong>socket</strong> — the <code>socket()/bind()/listen()/send()</code> API — sits exactly on the Application↔Transport boundary. It is the seam where your code stops and the kernel's networking begins, and TCP/IP makes that seam crisp where OSI blurred it across three layers.</dd>
+
+        <dt>Internet layer</dt>
+        <dd>Addressing and routing across independent networks: <strong>IP</strong> plus its control companion <strong>ICMP</strong>. It moves a packet from any host to any other host, hop by hop, with no delivery guarantee. This is a router's entire world — and, as the visual model shows, it is the layer everything else is forced to agree on.</dd>
+
+        <dt>Link layer</dt>
+        <dd>Delivery across <em>one</em> hop, on <em>one</em> physical medium: Ethernet, Wi-Fi, ARP, and the wires, fiber and radio underneath. RFC 1122's four-layer model lumps signalling and framing together here; the five-layer textbook model splits them into <strong>Data Link</strong> (framing, MAC addressing) and <strong>Physical</strong> (the actual signals), matching OSI's bottom two.</dd>
+
+        <dt>Narrow waist (the hourglass)</dt>
+        <dd>The shape of the stack when you count <em>implementations</em> rather than layers: many application protocols on top, many link technologies on the bottom, and exactly <strong>one</strong> protocol in the middle — IP. The slogan is <em>"IP over everything, and everything over IP."</em> Because the only mandatory agreement is that single waist, the top and bottom evolved independently and without anyone's permission.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Take a single ordinary act: a program fetches <code>https://example.com/</code>. Reading the layers off that one request is the fastest way to make the model stop feeling like trivia.</p>
+
+      <p>At the <strong>Application</strong> layer, two protocols are stacked <em>inside one layer</em> — TLS wrapping HTTP — with no layer boundary between them, because TCP/IP has nowhere else to put encryption:</p>
+      <pre><code class="lang-text">Application  ──  TLS record  { HTTP/1.1 request }
+                    GET / HTTP/1.1
+                    Host: example.com</code></pre>
+
+      <p>The application hands those bytes down through a <strong>socket</strong>. This is the App↔Transport boundary made literal — every line below is the application layer, and <code>send()</code> is the exact moment the Transport layer takes over:</p>
+      <pre><code class="lang-python">import socket, ssl
+
+raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # SOCK_STREAM → TCP
+raw.connect(("93.184.216.34", 443))                       # (IP address, port)
+
+# TLS is *not* a separate layer — it is application code wrapping the socket.
+tls = ssl.create_default_context().wrap_socket(raw, server_hostname="example.com")
+
+tls.send(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")   # ← App hands bytes to Transport
+print(tls.recv(4096))</code></pre>
+
+      <p>Notice what the socket call already contains: a <strong>port</strong> (443 — a Transport-layer concept) and an <strong>IP address</strong> (93.184.216.34 — an Internet-layer concept). The API deliberately exposes exactly the two layers below it and nothing further down. Your code never names an Ethernet MAC address or a Wi-Fi channel; those are the Link layer's business, decided hop by hop and invisible from here.</p>
+
+      <p>On the wire, the same request appears as nested headers, one per layer below the application — the shape that <a href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">encapsulation</a> produces:</p>
+      <pre><code class="lang-text">Link      | Ethernet dst=aa:bb:cc:dd:ee:ff src=... type=0x0800   ← one hop only
+Internet  |   IP  src=192.168.1.20  dst=93.184.216.34  proto=6   ← host to host
+Transport |     TCP src=51514  dst=443  seq=...                  ← process to process
+Application|      TLS record → HTTP/1.1 GET /                    ← what the app means</code></pre>
+
+      <p>Each layer answers a different question, and each answer has a different lifetime. The Ethernet header is rewritten at <em>every</em> router hop, because "the next machine on this cable" changes constantly. The IP header survives the whole journey end to end. The TCP header identifies the two <em>processes</em>. And the application payload is the only part anyone actually wanted to send.</p>
+
+      <p>Mapping the things a working engineer touches onto that stack:</p>
+      <table class="compare">
+        <thead><tr><th>What you touch</th><th>TCP/IP layer</th><th>What it buys you</th></tr></thead>
+        <tbody>
+          <tr><td>HTTP, DNS, SMTP, SSH</td><td>Application</td><td>the protocols programs speak to each other</td></tr>
+          <tr><td><strong>TLS / SSL</strong></td><td>Application (top of it)</td><td>no dedicated layer — the app secures its own data</td></tr>
+          <tr><td><strong>Sockets API</strong></td><td>boundary of App ↔ Transport</td><td>where your code plugs into TCP/UDP</td></tr>
+          <tr><td>TCP, UDP</td><td>Transport</td><td>ports, and optionally reliability and ordering</td></tr>
+          <tr><td>IP, ICMP, routing tables</td><td>Internet</td><td>addressing and routing — a router's whole job</td></tr>
+          <tr><td>Ethernet, Wi-Fi, ARP, switches</td><td>Link</td><td>one-hop delivery and MAC addressing</td></tr>
+          <tr><td>cables, fiber, radio</td><td>Link (or Physical, in the 5-layer split)</td><td>the actual signals</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Two questions usually get asked separately, so they get answered separately — and that is why the topic feels muddled. <em>"How does OSI map onto TCP/IP?"</em> and <em>"why is IP special?"</em> are the same picture seen from two sides. Line the models up as columns and the mapping is obvious: the middle never moves, and only the top and bottom get reorganized. Now look at the <em>same</em> vertical bands from the right, counting how many real protocols sit in each one, and the stack stops being a rectangle. It bulges at the top (every app protocol ever written), bulges at the bottom (every transmission technology ever built), and pinches to a single point in the middle. That pinch is IP.</p>
+
+      <p>The diagram below is one figure doing both jobs. Height means <em>layer</em> on both sides: whatever row you are reading in the columns on the left is the same row you are reading in the hourglass on the right. Step through it, then <strong>hover or click any protocol name</strong> in the hourglass to watch it funnel through the waist.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 900 560" aria-label="Left: OSI seven layers mapped onto the TCP/IP five-layer and four-layer models, aligned by height. Right: the internet hourglass, with many application protocols narrowing through TCP and UDP into a single IP waist, then widening into many link technologies.">
+          <defs>
+            <marker id="arw" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ═══════════ LEFT: the mapping ═══════════ -->
+          <text x="22"  y="30" class="col-head">OSI (7)</text>
+          <text x="152" y="30" class="col-head">TCP/IP 5-LAYER</text>
+          <text x="292" y="30" class="col-head">TCP/IP 4-LAYER</text>
+
+          <!-- OSI column -->
+          <g id="osi-7" class="step-el">
+            <rect class="node-rect" x="20" y="70" width="110" height="30" />
+            <text class="node-text" x="75" y="90" text-anchor="middle" font-size="12">7 Application</text>
+          </g>
+          <g id="osi-6" class="step-el">
+            <rect class="node-rect" x="20" y="104" width="110" height="30" />
+            <text class="node-text" x="75" y="124" text-anchor="middle" font-size="12">6 Presentation</text>
+          </g>
+          <g id="osi-5" class="step-el">
+            <rect class="node-rect" x="20" y="138" width="110" height="30" />
+            <text class="node-text" x="75" y="158" text-anchor="middle" font-size="12">5 Session</text>
+          </g>
+          <g id="osi-4" class="step-el">
+            <rect class="node-rect" x="20" y="190" width="110" height="50" />
+            <text class="node-text" x="75" y="220" text-anchor="middle" font-size="12">4 Transport</text>
+          </g>
+          <g id="osi-3" class="step-el">
+            <rect class="node-rect" x="20" y="260" width="110" height="50" />
+            <text class="node-text" x="75" y="290" text-anchor="middle" font-size="12">3 Network</text>
+          </g>
+          <g id="osi-2" class="step-el">
+            <rect class="node-rect" x="20" y="330" width="110" height="50" />
+            <text class="node-text" x="75" y="360" text-anchor="middle" font-size="12">2 Data Link</text>
+          </g>
+          <g id="osi-1" class="step-el">
+            <rect class="node-rect" x="20" y="400" width="110" height="50" />
+            <text class="node-text" x="75" y="430" text-anchor="middle" font-size="12">1 Physical</text>
+          </g>
+
+          <!-- merge braces -->
+          <path id="merge-top" class="step-el brace" d="M134,85 L142,85 M134,119 L142,119 M134,153 L142,153 M142,85 L142,153 M142,119 L150,119" />
+          <path id="map-mid" class="step-el brace" d="M134,215 L150,215 M134,285 L150,285" />
+          <path id="merge-bottom" class="step-el brace" d="M134,355 L150,355 M134,425 L150,425 M274,355 L282,355 M274,425 L282,425 M282,355 L282,425 M282,390 L290,390" />
+
+          <!-- TCP/IP 5-layer column -->
+          <g id="t5-app" class="step-el">
+            <rect class="node-rect" x="150" y="70" width="120" height="98" />
+            <text class="node-text" x="210" y="115" text-anchor="middle" font-size="12">Application</text>
+            <text class="label-text" x="210" y="133" text-anchor="middle">3 layers → 1</text>
+          </g>
+          <g id="t5-tr" class="step-el">
+            <rect class="node-rect" x="150" y="190" width="120" height="50" />
+            <text class="node-text" x="210" y="220" text-anchor="middle" font-size="12">Transport</text>
+          </g>
+          <g id="t5-net" class="step-el">
+            <rect class="node-rect" x="150" y="260" width="120" height="50" />
+            <text class="node-text" x="210" y="290" text-anchor="middle" font-size="12">Network</text>
+          </g>
+          <g id="t5-dl" class="step-el">
+            <rect class="node-rect" x="150" y="330" width="120" height="50" />
+            <text class="node-text" x="210" y="360" text-anchor="middle" font-size="12">Data Link</text>
+          </g>
+          <g id="t5-phy" class="step-el">
+            <rect class="node-rect" x="150" y="400" width="120" height="50" />
+            <text class="node-text" x="210" y="430" text-anchor="middle" font-size="12">Physical</text>
+          </g>
+
+          <!-- TCP/IP 4-layer column -->
+          <g id="t4-app" class="step-el">
+            <rect class="node-rect" x="290" y="70" width="120" height="98" />
+            <text class="node-text" x="350" y="108" text-anchor="middle" font-size="12">Application</text>
+            <text class="label-text" x="350" y="126" text-anchor="middle">HTTP · DNS · SSH</text>
+            <text class="label-text" x="350" y="142" text-anchor="middle">+ TLS lives here</text>
+          </g>
+          <g id="sock-line" class="step-el">
+            <line class="seam" x1="286" y1="179" x2="414" y2="179" />
+            <text class="label-text" x="350" y="175" text-anchor="middle">sockets API — the seam</text>
+          </g>
+          <g id="t4-tr" class="step-el">
+            <rect class="node-rect" x="290" y="190" width="120" height="50" />
+            <text class="node-text" x="350" y="213" text-anchor="middle" font-size="12">Transport</text>
+            <text class="label-text" x="350" y="229" text-anchor="middle">TCP · UDP</text>
+          </g>
+          <g id="t4-int" class="step-el">
+            <rect class="node-rect" x="290" y="260" width="120" height="50" />
+            <text class="node-text" x="350" y="283" text-anchor="middle" font-size="12">Internet</text>
+            <text class="label-text" x="350" y="299" text-anchor="middle">IP · ICMP</text>
+          </g>
+          <g id="t4-link" class="step-el">
+            <rect class="node-rect" x="290" y="330" width="120" height="120" />
+            <text class="node-text" x="350" y="378" text-anchor="middle" font-size="12">Link</text>
+            <text class="label-text" x="350" y="396" text-anchor="middle">Ethernet · Wi-Fi · ARP</text>
+            <text class="label-text" x="350" y="412" text-anchor="middle">one layer, not two</text>
+          </g>
+
+          <text class="label-text" x="20" y="482">The middle two rows are identical in all three models.</text>
+          <text class="label-text" x="20" y="499">Only the top three and bottom two are reorganized.</text>
+
+          <!-- divider -->
+          <line class="divider" x1="440" y1="24" x2="440" y2="510" stroke-dasharray="4 5" />
+
+          <!-- ═══════════ RIGHT: the hourglass ═══════════ -->
+          <text x="675" y="30" class="col-head" text-anchor="middle">THE HOURGLASS — SAME ROWS, COUNTED BY PROTOCOL</text>
+
+          <polygon id="hg-top-funnel" class="step-el funnel" points="462,78 888,78 722,258 628,258" />
+          <polygon id="hg-bottom-funnel" class="step-el funnel" points="628,312 722,312 888,436 462,436" />
+
+          <text class="label-text" x="675" y="70" text-anchor="middle">many applications — anyone may add one</text>
+
+          <g id="hg-apps" class="step-el">
+            <g class="proto" data-wire="w-http" tabindex="0">
+              <rect class="node-rect" x="470" y="88" width="66" height="24" />
+              <text class="node-text" x="503" y="105" text-anchor="middle" font-size="11">HTTP</text>
+            </g>
+            <g class="proto" data-wire="w-dns" tabindex="0">
+              <rect class="node-rect" x="555" y="88" width="66" height="24" />
+              <text class="node-text" x="588" y="105" text-anchor="middle" font-size="11">DNS</text>
+            </g>
+            <g class="proto" data-wire="w-smtp" tabindex="0">
+              <rect class="node-rect" x="640" y="88" width="66" height="24" />
+              <text class="node-text" x="673" y="105" text-anchor="middle" font-size="11">SMTP</text>
+            </g>
+            <g class="proto" data-wire="w-ssh" tabindex="0">
+              <rect class="node-rect" x="725" y="88" width="66" height="24" />
+              <text class="node-text" x="758" y="105" text-anchor="middle" font-size="11">SSH</text>
+            </g>
+            <g class="proto" data-wire="w-quic" tabindex="0">
+              <rect class="node-rect" x="810" y="88" width="66" height="24" />
+              <text class="node-text" x="843" y="105" text-anchor="middle" font-size="11">QUIC</text>
+            </g>
+            <path id="w-http" class="wire" d="M503,112 L630,195" />
+            <path id="w-dns"  class="wire" d="M588,112 L720,195" />
+            <path id="w-smtp" class="wire" d="M673,112 L630,195" />
+            <path id="w-ssh"  class="wire" d="M758,112 L630,195" />
+            <path id="w-quic" class="wire" d="M843,112 L720,195" />
+          </g>
+
+          <g id="hg-transport" class="step-el">
+            <rect class="node-rect" x="595" y="195" width="70" height="30" />
+            <text class="node-text" x="630" y="215" text-anchor="middle" font-size="12">TCP</text>
+            <rect class="node-rect" x="685" y="195" width="70" height="30" />
+            <text class="node-text" x="720" y="215" text-anchor="middle" font-size="12">UDP</text>
+            <text class="label-text" x="778" y="215">two choices, not many</text>
+            <path id="w-tcp-ip" class="wire" d="M630,225 L655,265" />
+            <path id="w-udp-ip" class="wire" d="M720,225 L695,265" />
+          </g>
+
+          <g id="hg-waist" class="step-el">
+            <rect class="waist-rect" x="610" y="265" width="130" height="40" />
+            <text class="node-text" x="675" y="290" text-anchor="middle" font-size="15" font-weight="700">IP</text>
+            <text class="label-text" x="752" y="282">everything over IP,</text>
+            <text class="label-text" x="752" y="298">IP over everything</text>
+            <text class="label-text" x="598" y="290" text-anchor="end">the waist:</text>
+            <text class="label-text" x="598" y="306" text-anchor="end">exactly one</text>
+          </g>
+
+          <g id="hg-links" class="step-el">
+            <path id="w-eth" class="wire" d="M660,305 L508,400" />
+            <path id="w-wifi" class="wire" d="M668,305 L593,400" />
+            <path id="w-fiber" class="wire" d="M675,305 L675,400" />
+            <path id="w-5g" class="wire" d="M682,305 L757,400" />
+            <path id="w-bt" class="wire" d="M690,305 L842,400" />
+            <g class="proto" data-wire="w-eth" tabindex="0">
+              <rect class="node-rect" x="470" y="400" width="76" height="24" />
+              <text class="node-text" x="508" y="417" text-anchor="middle" font-size="11">Ethernet</text>
+            </g>
+            <g class="proto" data-wire="w-wifi" tabindex="0">
+              <rect class="node-rect" x="555" y="400" width="76" height="24" />
+              <text class="node-text" x="593" y="417" text-anchor="middle" font-size="11">Wi-Fi</text>
+            </g>
+            <g class="proto" data-wire="w-fiber" tabindex="0">
+              <rect class="node-rect" x="637" y="400" width="76" height="24" />
+              <text class="node-text" x="675" y="417" text-anchor="middle" font-size="11">Fiber</text>
+            </g>
+            <g class="proto" data-wire="w-5g" tabindex="0">
+              <rect class="node-rect" x="719" y="400" width="76" height="24" />
+              <text class="node-text" x="757" y="417" text-anchor="middle" font-size="11">5G</text>
+            </g>
+            <g class="proto" data-wire="w-bt" tabindex="0">
+              <rect class="node-rect" x="804" y="400" width="76" height="24" />
+              <text class="node-text" x="842" y="417" text-anchor="middle" font-size="11">Bluetooth</text>
+            </g>
+          </g>
+
+          <text class="label-text" x="675" y="450" text-anchor="middle">many link technologies — anyone may add one</text>
+          <text class="label-text" x="675" y="482" text-anchor="middle">A new app needs no new wire. A new wire needs no new app.</text>
+          <text class="label-text" x="675" y="499" text-anchor="middle">Both sides only ever agreed on the waist.</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+        <p class="hourglass-hint">Hover or focus any protocol box in the hourglass to trace its path through the IP waist.</p>
+      </div>
+
+      <p>The payoff of the right-hand side is historical, not aesthetic. Because the <em>only</em> thing every party had to agree on was IP, a new application could be invented without asking any network operator's permission, and a new transmission technology could be deployed without asking any application author's permission. Neither side had to coordinate with the other — they only had to meet at the waist. That is the concrete mechanism behind "the internet scaled explosively," and it is the same narrow-waist argument that shows up later in API and platform design.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why a second model exists at all</h3>
+        <p>The awkwardness of having two models is entirely a story about process. <strong>OSI</strong> was produced by an international standards committee (ISO) across the late 1970s and 80s: a complete, elegant seven-layer blueprint, <em>designed first and implemented later</em>. <strong>TCP/IP</strong> grew out of DARPA and the ARPANET in the 1970s: <em>built first and standardized later</em> — RFC 1122 documents in 1989 a stack that had already been running for years and had already shipped inside Unix as BSD sockets.</p>
+        <p>The IETF's motto settled the contest: <em>"We reject kings, presidents, and voting. We believe in rough consensus and running code."</em> OSI was the beautiful design that arrived late and heavy; TCP/IP was the pragmatic thing that already worked. The result is a split verdict worth memorizing: <strong>OSI won the vocabulary; TCP/IP won the internet.</strong> Learn OSI in order to <em>talk</em> about networking — "that's a layer 7 problem", "put it behind an L4 load balancer" — and learn TCP/IP because it is what is actually <em>deployed</em>.</p>
+
+        <h3>"Which layer is TLS?" — the question that exposes the difference</h3>
+        <p>In OSI this question has no clean answer. Encryption is nominally Presentation (layer 6), but TLS also manages sessions (layer 5) and is invoked by the application (layer 7), so people argue about it endlessly and settle on unsatisfying phrases like "layer 6-ish" or "between 4 and 7". In TCP/IP the question dissolves: there <em>is</em> no Presentation or Session layer, so encryption is by definition the application's own job, and <strong>TLS is simply part of the Application layer</strong>. The Python snippet above is the proof — <code>wrap_socket</code> is ordinary application code wrapping an ordinary socket, with no kernel layer boundary crossed.</p>
+        <p>The corollary matters: Session and Presentation did not <em>disappear</em>. Their work — encryption, character encoding, serialization, session management — still happens on every connection. TCP/IP just declines to give that work its own layers and assigns it to the application instead.</p>
+
+        <h3>Four layers or five is not a real disagreement</h3>
+        <p>RFC 1122 says four; Kurose and Tanenbaum teach five. The entire difference is whether the bottom is one <strong>Link</strong> layer or two (<strong>Data Link</strong> + <strong>Physical</strong>). Nothing above it changes, no protocol moves, and no exam answer turns on it beyond stating which convention is in use. Say which model you mean and the ambiguity evaporates.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> forcing every real protocol into exactly one layer, on the assumption that OSI and TCP/IP line up 1:1. They do not, and the protocols do not cooperate.
+          <pre><code class="lang-text">ARP  — asks "which MAC has IP 192.168.1.1?"
+       consumes an Internet-layer address (IP)
+       produces a Link-layer address (MAC)
+       is carried directly in an Ethernet frame, NOT inside an IP packet
+       → belongs to neither layer cleanly; it straddles the boundary</code></pre>
+          <p>Why it breaks: the layers are a conceptual organization invented to make the system explainable, not a partition that the protocols were built to respect. ARP is the standard counterexample, but it is not the only one — ICMP rides <em>inside</em> IP yet exists to control IP, and QUIC implements transport features (ordering, retransmission, congestion control) in userspace on top of UDP, putting Transport-layer machinery in the Application layer. Insisting on a single correct layer number for these produces confident wrong answers.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> reading the model as a description of the code — expecting four kernel modules stacked in a row, one per layer.
+          <p>Why it breaks: like OSI, the TCP/IP model is a conceptual organization, not an implementation map. Real stacks blur it constantly — TLS is a userspace library, QUIC is a userspace transport, offloads push checksums and segmentation into the network card's firmware, and a single kernel path may touch several layers without any module boundary between them. Use the model to reason and to communicate; do not expect to find it in a directory listing.</p>
+        </div>
+
+        <h3>One term, two meanings</h3>
+        <p>"TCP/IP" names both the <em>model</em> (the four- or five-layer stack described here) and the <em>protocol suite</em> (TCP, IP, UDP, ICMP, ARP and the rest). "The TCP/IP model has four layers" and "the machine has a TCP/IP stack installed" use the phrase in different senses. Context always resolves it, but noticing the ambiguity prevents a class of confused conversations.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model — What Each Layer Does and Why the Split Exists</strong>
+        <span>The reference map this entry maps <em>from</em> — the seven layers in full, and the L2-vs-L3 vocabulary TCP/IP borrows but never replaced.</span>
+      </a>
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation — Segments → Packets → Frames → Bits</strong>
+        <span>The mechanism that turns the layer stack into bytes on a wire: the nested-header shape shown in the Concrete Example, layer by layer.</span>
+      </a>
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End — A Packet's Journey</strong>
+        <span>The same stack in motion — one request traversing every layer of it, from DNS lookup through hop-by-hop routing and back.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>RFC 1122 — Requirements for Internet Hosts, Communication Layers (1989)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">OSI has seven layers and the official TCP/IP model has four. Which OSI layers merged, and into what?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Transport and Network merged into Internet; everything else maps 1:1.</button>
+            <button class="option" data-correct="true">OSI 7+6+5 (Application, Presentation, Session) merged into one Application layer, and OSI 2+1 (Data Link, Physical) merged into one Link layer. The middle two map 1:1.</button>
+            <button class="option" data-correct="false">The top four merged into Application and the bottom three into Link, leaving only two layers of real content.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Both collapses happen at the edges: the top three become Application, the bottom two become Link. Transport and Network/Internet are untouched — which is why the middle of the diagram never moves between models.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why is "which layer is TLS?" a straightforward question in TCP/IP but an argument in OSI?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Because TCP/IP places TLS in the Transport layer alongside TCP, whereas OSI has no transport-layer encryption.</button>
+            <button class="option" data-correct="false">Because TLS did not exist when RFC 1122 was written, so TCP/IP simply excludes it from the model.</button>
+            <button class="option" data-correct="true">Because TCP/IP has no Presentation or Session layer — encryption is by definition the application's own job, so TLS is just part of Application. OSI must argue between layer 6, layer 5 and layer 7.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">TLS does encryption (OSI 6), session management (OSI 5) and is driven by the application (OSI 7), so OSI cannot place it cleanly. TCP/IP folds all three into Application and the question stops existing.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Suppose the internet had standardized on <em>three</em> competing network-layer protocols instead of one. Using the hourglass, describe concretely what would have become harder — and for whom.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The waist would no longer be narrow, and the decoupling it buys would collapse. Today an application author writes to one network layer and reaches every link technology; a link technology only has to carry IP to reach every application. With three network protocols, every new application would have to be built, tested and shipped against all three (or pick one and be unreachable from the other two networks), and every new transmission technology — Wi-Fi, 5G, fiber — would have to implement all three to be universally useful. Routers and middleboxes would multiply their forwarding logic; addressing, fragmentation and diagnostics would fork three ways. The cost is combinatorial: instead of <em>M + N</em> pieces of work meeting at one point, you get roughly <em>M × N</em> pairings to maintain. Crucially, growth would also stop being permissionless — a new app would need buy-in from multiple network camps before it could reach everyone, which is exactly the coordination bottleneck the single IP waist removed.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at this calibration, kept for parity) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (OSI → TCP/IP mapping, then the hourglass) ──
+    const steps = [
+      { activate: ['#osi-7', '#osi-6', '#osi-5', '#osi-4', '#osi-3', '#osi-2', '#osi-1'],
+        explanation: 'Start from the reference map: OSI’s seven layers, top to bottom. Nothing here is wrong — it is simply an idealized blueprint that was designed by committee before it was implemented. The deployed stack is leaner.' },
+      { activate: ['#osi-7', '#osi-6', '#osi-5', '#merge-top', '#t5-app', '#t4-app'],
+        explanation: 'First collapse: OSI’s top three — Application, Presentation, Session — become a single Application layer in both TCP/IP variants. TCP/IP gives session management and encoding no layers of their own, which is precisely why TLS is simply "part of Application" here.' },
+      { activate: ['#osi-4', '#osi-3', '#map-mid', '#t5-tr', '#t5-net', '#t4-tr', '#t4-int'],
+        explanation: 'The middle maps one-to-one and never changes: OSI Transport is TCP/IP Transport (TCP, UDP), and OSI Network is TCP/IP Internet (IP, ICMP) — the same layer under a different name. All three models agree exactly here.' },
+      { activate: ['#osi-2', '#osi-1', '#merge-bottom', '#t5-dl', '#t5-phy', '#t4-link'],
+        explanation: 'Second collapse — and the only place the two TCP/IP variants differ. The 5-layer textbook model keeps OSI’s Data Link and Physical split; the official 4-layer model of RFC 1122 lumps framing and signalling into one Link layer. One seam, no substantive disagreement.' },
+      { activate: ['#t4-app', '#sock-line', '#t4-tr'],
+        explanation: 'The App↔Transport boundary is the one TCP/IP makes crisp: the sockets API. socket()/bind()/listen()/send() is the exact line where your application hands bytes to TCP or UDP. OSI blurred that same line across three separate layers.' },
+      { activate: ['#t4-app', '#hg-apps', '#hg-top-funnel', '#hg-transport', '#t4-tr'],
+        explanation: 'Now read the same rows from the right, counting real protocols instead of layers. The Application row is enormous — HTTP, DNS, SMTP, SSH, QUIC, and anything invented tomorrow. Below it, that variety narrows to just two transports.' },
+      { activate: ['#hg-waist', '#hg-top-funnel', '#hg-bottom-funnel', '#t4-int'],
+        explanation: 'And then to exactly one. The Internet row contains a single protocol: IP. This is the narrow waist — "everything over IP, and IP over everything." Every packet from every application on every medium passes through this one agreement.' },
+      { activate: ['#hg-waist', '#hg-links', '#hg-bottom-funnel', '#t4-link'],
+        explanation: 'Below the waist it widens again: Ethernet, Wi-Fi, fiber, 5G, Bluetooth, and whatever comes next. Because the top and bottom only ever had to agree on IP — never on each other — innovation at both ends happened independently and permissionlessly. That is the hourglass, and that is why the internet scaled.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    let applyStep = () => {};
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      applyStep = function(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      };
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Hourglass: trace one protocol through the IP waist ────────
+    const waistGroups = ['#hg-apps', '#hg-transport', '#hg-waist', '#hg-links',
+                         '#hg-top-funnel', '#hg-bottom-funnel', '#t4-int'];
+    const transportWires = ['#w-tcp-ip', '#w-udp-ip'];
+
+    function trace(proto) {
+      const wireId = proto.dataset.wire;
+      const isApp = proto.closest('#hg-apps');
+      // Light the whole funnel context so the traced path is legible.
+      waistGroups.forEach(sel => document.querySelector(sel).classList.add('active'));
+      document.querySelectorAll('.diagram-svg .wire').forEach(w => w.classList.remove('lit'));
+      const wire = document.getElementById(wireId);
+      if (wire) wire.classList.add('lit');
+      if (isApp) {
+        // App → its transport → IP. Pick the transport its wire lands on.
+        const usesUdp = ['w-dns', 'w-quic'].includes(wireId);
+        document.querySelector(usesUdp ? '#w-udp-ip' : '#w-tcp-ip').classList.add('lit');
+      }
+      proto.classList.add('lit');
+    }
+
+    function untrace() {
+      document.querySelectorAll('.diagram-svg .wire').forEach(w => w.classList.remove('lit'));
+      document.querySelectorAll('.diagram-svg .proto').forEach(p => p.classList.remove('lit'));
+      applyStep(currentStep);
+    }
+
+    document.querySelectorAll('.diagram-svg .proto').forEach(proto => {
+      proto.addEventListener('mouseenter', () => trace(proto));
+      proto.addEventListener('focus', () => trace(proto));
+      proto.addEventListener('mouseleave', untrace);
+      proto.addEventListener('blur', untrace);
+      proto.addEventListener('click', () => trace(proto));
+    });
+    void transportWires;
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'osi-model': { title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists', summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.' },
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+      'how-internet-works': { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

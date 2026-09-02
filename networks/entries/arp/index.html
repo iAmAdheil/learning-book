@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific diagram rules only */
+    .diagram-svg .bcast-line { stroke-dasharray: 6 4; }
+    .diagram-svg .reply-line { stroke-width: 2.5; }
+    .diagram-svg .mono { font-family: var(--mono); font-size: 11px; fill: var(--text-muted); }
+    .diagram-svg .note-text { fill: var(--text-muted); font-family: var(--font); font-size: 11px; }
+    .diagram-svg .match-text { fill: var(--accent); font-family: var(--font); font-size: 11.5px; font-weight: 600; }
+    .diagram-svg .cache-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; }
+    .diagram-svg .cache-rule { stroke: var(--border); stroke-width: 1; }
+    /* the cache is either empty or filled — the two states share one row slot */
+    .diagram-svg #cache-empty, .diagram-svg #cache-row { opacity: 0; }
+    .diagram-svg #cache-empty.active, .diagram-svg #cache-row.active { opacity: 1; }
+    .diagram-svg #cache-row text { fill: var(--text); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A host about to transmit knows the destination <strong>IP address</strong> but cannot put a frame on the wire without a destination <strong>MAC address</strong> — two different addressing worlds, and nothing connects them. <strong>ARP</strong> (Address Resolution Protocol, RFC 826) is that connective tissue: it <strong>broadcasts</strong> a question to the entire local segment, receives one <strong>unicast</strong> answer, and <strong>caches</strong> the result. The whole protocol is three moves, resolves only the <em>next hop</em>, and authenticates nothing — which is why it is also the foundation of most LAN man-in-the-middle attacks.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">arp</span>
+        <span class="badge tag">address-resolution</span>
+        <span class="badge tag">arp-cache</span>
+        <span class="badge tag">gratuitous-arp</span>
+        <span class="badge tag">arp-spoofing</span>
+        <span class="badge tag">mitm</span>
+        <span class="badge tag">broadcast</span>
+        <span class="badge tag">ndp</span>
+        <span class="badge tag">next-hop</span>
+        <span class="badge tag">default-gateway</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>ARP (Address Resolution Protocol)</dt>
+        <dd>A protocol that maps a local <strong>IP address</strong> (layer 3, logical, end-to-end) to the <strong>MAC address</strong> (layer 2, physical, one link) of the machine holding it. ARP rides <em>directly</em> on Ethernet under EtherType <code>0x0806</code> — it is <strong>not</strong> carried inside an IP packet, even though it carries IP addresses. It straddles the two layers rather than sitting in either.</dd>
+
+        <dt>Next hop</dt>
+        <dd>The <em>one machine on the local link</em> a frame is physically handed to next — which is the final destination only when that destination shares the sender's subnet. When the destination is off-subnet, the routing decision names the <strong>default gateway</strong> (the router) as the next hop instead. ARP always resolves the next hop, never the far end of the conversation.</dd>
+
+        <dt>Broadcast domain</dt>
+        <dd>The set of devices a <strong>broadcast</strong> frame — one addressed to <code>ff:ff:ff:ff:ff:ff</code>, meaning "everyone" — actually reaches. It is bounded by VLAN and router boundaries. A <strong>unicast</strong> frame, by contrast, carries one specific destination MAC and is delivered to exactly one machine.</dd>
+
+        <dt>ARP cache</dt>
+        <dd>A per-host table of learned <code>IP → MAC</code> mappings, consulted before every transmission so the broadcast only has to happen once per destination. Entries <strong>expire</strong> after minutes, so mappings that go stale correct themselves — slowly.</dd>
+
+        <dt>Gratuitous ARP</dt>
+        <dd>An <em>unprompted</em> ARP message announcing a host's own <code>IP → MAC</code> mapping when nobody asked. Used to announce arrival, to detect address conflicts, and — most importantly — to instantly rewrite every cache on the segment when a standby device takes over a shared IP.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Start from an empty table. A laptop at <code>192.168.1.5</code> has just joined the network and has spoken to nobody:</p>
+      <pre><code class="lang-shell">$ arp -a
+? (192.168.1.1) at (incomplete) on en0 ifscope [ethernet]</code></pre>
+
+      <p>Now ping a machine on the same subnet. The first packet cannot leave until the MAC is known, so ARP runs first — which is why the very first ping in a fresh session is often measurably slower than the rest:</p>
+      <pre><code class="lang-shell">$ ping -c 1 192.168.1.10
+64 bytes from 192.168.1.10: icmp_seq=0 ttl=64 time=4.81 ms   &lt;- includes the ARP round trip
+
+$ arp -a
+? (192.168.1.10) at dd:dd:dd:44:44:44 [ether] on en0        &lt;- learned just now
+? (192.168.1.1)  at a4:5e:60:12:34:56 [ether] on en0        &lt;- the gateway</code></pre>
+
+      <p>Two frames crossed the wire between those two commands. The first was addressed to everyone; the second to exactly one machine:</p>
+      <pre><code class="lang-text">FRAME 1 — ARP REQUEST                     FRAME 2 — ARP REPLY
+  dst MAC  ff:ff:ff:ff:ff:ff  (broadcast)    dst MAC  aa:aa:aa:11:11:11  (unicast)
+  src MAC  aa:aa:aa:11:11:11                 src MAC  dd:dd:dd:44:44:44
+  EtherType 0x0806 (ARP)                     EtherType 0x0806 (ARP)
+  opcode   1 = request                       opcode   2 = reply
+  sender   192.168.1.5  / aa:aa:aa:11:11:11  sender   192.168.1.10 / dd:dd:dd:44:44:44
+  target   192.168.1.10 / 00:00:00:00:00:00  target   192.168.1.5  / aa:aa:aa:11:11:11
+      "Who has 192.168.1.10? Tell 192.168.1.5."   "192.168.1.10 is at dd:dd:dd:44:44:44."</code></pre>
+
+      <p>The asymmetry is forced by what each side knows. The requester does not have the target's MAC — that is the entire point of asking — so it has no choice but to address the question to <code>ff:ff:ff:ff:ff:ff</code> and let every device on the segment decide for itself whether the question is about it. The responder is in a completely different position: the request carried the asker's IP <em>and</em> MAC in its sender fields, so the answer can go straight back as a unicast. One question to everybody; one answer to one machine.</p>
+
+      <p>Now change one digit and the behaviour changes completely. Ping something off-subnet:</p>
+      <pre><code class="lang-shell">$ ping -c 1 93.184.215.14        # a public server, not on 192.168.1.0/24
+$ arp -a
+? (192.168.1.1) at a4:5e:60:12:34:56 [ether] on en0
+# ...and nothing whatsoever for 93.184.215.14</code></pre>
+
+      <p>There is no entry for the server, and there never will be. Layer 3 decides first: <em>"is this destination on my subnet?"</em> No — so the packet goes to the default gateway, and it is the <strong>gateway's</strong> IP that gets handed to ARP. The IP header still says <code>93.184.215.14</code> the whole way; only the frame around it is addressed to the router. ARP is subordinate to the routing decision — the host picks a next hop first, and ARP merely fetches that next hop's MAC.</p>
+
+      <p>Deleting an entry forces the exchange to happen again, which is the cleanest way to watch it live in a packet capture:</p>
+      <pre><code class="lang-shell">arp -a                       # view the cache (macOS / Linux / Windows)
+ip neigh                     # modern Linux equivalent (the neighbour table)
+arp -d 192.168.1.1           # delete an entry, forcing a fresh request/reply
+
+Switch# show ip arp
+Switch(config)# ip arp inspection vlan 10    # enable Dynamic ARP Inspection</code></pre>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture yourself in a room full of people. You know someone in here is called Ana, but you have never met her and cannot pick her out. So you <em>shout to the whole room</em>: "Is Ana here? It's Sam, by the door." Everyone hears you; almost everyone ignores you, because they are not Ana. Ana walks over and answers you — <em>quietly, directly, to you alone</em> — because your shout told her exactly where you were standing. And you write her face down, so you never have to shout again. That is ARP, complete: shout once, get one private answer, remember it.</p>
+
+      <p>The shape worth carrying away is the asymmetry. The request is expensive and disruptive — it interrupts every device in the broadcast domain, and every one of them burns a little CPU deciding the question is not about it. The reply is cheap and precise. Step through the exchange below and watch the traffic go from "everyone" to "exactly one", ending with the cache entry that makes the whole dance unnecessary next time.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">7</span></div>
+        <svg class="diagram-svg" viewBox="0 0 720 490" aria-label="ARP exchange on one Ethernet segment: Host A broadcasts a request to four hosts, three discard it, the owner replies by unicast, and Host A's ARP cache is populated">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L9,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Request label (top) ── -->
+          <g id="lbl-request" class="step-el">
+            <text x="360" y="18" text-anchor="middle" class="node-text" font-weight="700">ARP REQUEST — broadcast, dst MAC ff:ff:ff:ff:ff:ff</text>
+            <text x="360" y="36" text-anchor="middle" class="mono">"Who has 192.168.1.10?  Tell 192.168.1.5."</text>
+          </g>
+
+          <!-- ── Requesting host ── -->
+          <g id="node-a" class="step-el">
+            <rect x="20" y="180" width="185" height="80" class="node-rect" />
+            <text x="112" y="206" text-anchor="middle" class="node-text" font-weight="700">Host A — the asker</text>
+            <text x="112" y="226" text-anchor="middle" class="mono">192.168.1.5</text>
+            <text x="112" y="244" text-anchor="middle" class="mono">aa:aa:aa:11:11:11</text>
+          </g>
+
+          <!-- ── Broadcast fan: one line to every host on the segment ── -->
+          <g id="bcast">
+            <line class="step-el edge-line bcast-line" x1="205" y1="200" x2="462" y2="78" marker-end="url(#arrow)" />
+            <line class="step-el edge-line bcast-line" x1="205" y1="200" x2="462" y2="158" marker-end="url(#arrow)" />
+            <line class="step-el edge-line bcast-line" x1="205" y1="200" x2="462" y2="238" marker-end="url(#arrow)" />
+            <line class="step-el edge-line bcast-line" x1="205" y1="200" x2="462" y2="318" marker-end="url(#arrow)" />
+          </g>
+
+          <!-- ── Every host in the broadcast domain ── -->
+          <g id="node-b" class="step-el">
+            <rect x="467" y="50" width="235" height="56" class="node-rect" />
+            <text x="584" y="72" text-anchor="middle" class="node-text">Host B — 192.168.1.7</text>
+            <text x="584" y="92" text-anchor="middle" class="mono">bb:bb:bb:22:22:22</text>
+          </g>
+          <text id="ignore-b" x="467" y="124" class="step-el note-text">✗ not my IP — frame discarded</text>
+
+          <g id="node-c" class="step-el">
+            <rect x="467" y="130" width="235" height="56" class="node-rect" />
+            <text x="584" y="152" text-anchor="middle" class="node-text">Host C — 192.168.1.9</text>
+            <text x="584" y="172" text-anchor="middle" class="mono">cc:cc:cc:33:33:33</text>
+          </g>
+          <text id="ignore-c" x="467" y="204" class="step-el note-text">✗ not my IP — frame discarded</text>
+
+          <g id="node-d" class="step-el">
+            <rect x="467" y="210" width="235" height="56" class="node-rect" />
+            <text x="584" y="232" text-anchor="middle" class="node-text" font-weight="700">Host D — 192.168.1.10</text>
+            <text x="584" y="252" text-anchor="middle" class="mono">dd:dd:dd:44:44:44</text>
+          </g>
+          <g id="match-d" class="step-el">
+            <text x="467" y="284" class="match-text">✓ that's me — and I now know A too</text>
+            <text x="467" y="300" class="mono">192.168.1.5 → aa:aa:aa:11:11:11 cached</text>
+          </g>
+
+          <g id="node-e" class="step-el">
+            <rect x="467" y="330" width="235" height="56" class="node-rect" />
+            <text x="584" y="352" text-anchor="middle" class="node-text">Host E — 192.168.1.22</text>
+            <text x="584" y="372" text-anchor="middle" class="mono">ee:ee:ee:55:55:55</text>
+          </g>
+          <text id="ignore-e" x="467" y="404" class="step-el note-text">✗ not my IP — frame discarded</text>
+
+          <!-- ── Unicast reply: one line, one recipient ── -->
+          <path id="msg-reply" class="step-el edge-line reply-line" fill="none"
+                d="M467,262 C 400,340 300,345 210,254" marker-end="url(#arrow)" />
+          <g id="lbl-reply" class="step-el">
+            <text x="352" y="372" text-anchor="middle" class="node-text" font-weight="700">ARP REPLY — unicast, dst MAC aa:aa:aa:11:11:11</text>
+            <text x="352" y="390" text-anchor="middle" class="mono">"192.168.1.10 is at dd:dd:dd:44:44:44."</text>
+          </g>
+
+          <!-- ── Host A's ARP cache ── -->
+          <text x="20" y="424" class="node-text" font-weight="700">Host A's ARP cache</text>
+          <rect x="20" y="432" width="330" height="52" class="cache-box" rx="6" />
+          <text x="32" y="450" class="note-text">IP address</text>
+          <text x="172" y="450" class="note-text">MAC address</text>
+          <line x1="20" y1="458" x2="350" y2="458" class="cache-rule" />
+          <text id="cache-empty" x="32" y="475" class="step-el mono">(empty — nothing known for 192.168.1.10)</text>
+          <g id="cache-row" class="step-el">
+            <text x="32" y="475" class="mono">192.168.1.10</text>
+            <text x="172" y="475" class="mono">dd:dd:dd:44:44:44</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>Notice what the diagram does <em>not</em> show: any host outside this segment. The request frame is a broadcast, so it dies at the first VLAN or router boundary it meets. Routers do not forward ARP — each hop along a path runs its own local ARP for its own next hop. This is the same "resolve once, then cache with an expiry" shape as DNS name resolution, but at the opposite end of the stack: DNS maps a name to an IP globally, ARP maps an IP to a MAC across a single link.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Gratuitous ARP, and why failover depends on it</h3>
+        <p>A gratuitous ARP is an announcement nobody requested — a host stating its own <code>IP → MAC</code> mapping into the void. It has three jobs, and the third is the one that matters operationally:</p>
+        <ul>
+          <li><strong>Announce presence.</strong> On boot, or after a NIC replacement, refresh everyone's cache rather than waiting for their entries to expire.</li>
+          <li><strong>Detect address conflicts.</strong> ARP for your <em>own</em> IP. Silence means the address is free; a reply means somebody else already has it.</li>
+          <li><strong>Failover.</strong> When a standby device takes over a shared IP — a redundant gateway, a load-balancer virtual IP — the IP has not changed but the MAC behind it has. A gratuitous ARP rewrites every cache on the segment at once.</li>
+        </ul>
+        <p>Skip that third one and the redundancy is worthless. Every host on the segment still holds the dead device's MAC against the gateway IP, and the ARP cache is not consulted for correctness — it is consulted for speed, and it has no way to know its answer is now wrong. Traffic keeps being addressed to a machine that is no longer listening until each entry independently ages out, minutes later. The backup was ready the entire time; nobody was told to look at it.</p>
+
+        <h3>The protocol authenticates nothing at all</h3>
+        <p>There is no field in an ARP message for proving the claim it makes, and no state machine that requires a reply to correspond to a request. Any device can assert that any IP belongs to its MAC, and every host that hears it will simply write that down — <strong>unsolicited replies are accepted</strong>. That is not a bug in an implementation; it is the protocol as specified in 1982, on a network where every attached machine was assumed to be trustworthy.</p>
+        <p>The consequence is <strong>ARP spoofing</strong> (or poisoning), the basis of most LAN man-in-the-middle attacks. Two forged messages are enough to sit invisibly in the middle of a conversation:</p>
+        <pre><code class="lang-text">Attacker → Victim  : "192.168.1.1 (the gateway) is at ATTACKER_MAC"
+Attacker → Gateway : "192.168.1.10 (the victim)  is at ATTACKER_MAC"
+
+  victim  ──▶ attacker ──▶ gateway      (attacker reads / rewrites in transit)
+  gateway ──▶ attacker ──▶ victim</code></pre>
+        <p>Both ends now believe they are talking to each other and both are talking to the attacker, who forwards the traffic on so nothing appears broken. Note what this defeats: a switch normally gives a degree of privacy by delivering unicast frames only to the port that owns the destination MAC. Spoofing sidesteps that entirely, because it poisons the <em>endpoints' own maps</em> rather than the switch's forwarding table. The frames really are addressed to the attacker, so the switch is doing its job perfectly while delivering them.</p>
+        <p>Defences work at three different levels. <strong>Dynamic ARP Inspection</strong> makes the switch validate every ARP message on untrusted ports against a trusted binding table (typically built by DHCP snooping) and drop the ones that lie. <strong>Static ARP entries</strong> pin critical mappings — the gateway, most often — so no announcement can overwrite them, at the cost of manual maintenance and broken failover. And <strong>TLS</strong> gives up on preventing interception altogether, ensuring instead that intercepted traffic is unreadable and untamperable.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> believing a host ARPs for the MAC of the remote server it is actually talking to.
+          <pre><code class="lang-text">wrong:   laptop 192.168.1.5  ──ARP──&gt; "who has 93.184.215.14?"
+                                        (nobody on this link owns it; nothing answers)
+
+right:   1. routing decision: 93.184.215.14 is off-subnet → next hop = 192.168.1.1
+         2. ARP: "who has 192.168.1.1?"  → gateway's MAC
+         3. frame: dst MAC = gateway, dst IP = 93.184.215.14</code></pre>
+          <p>Why it breaks: ARP is a broadcast confined to one link, so the only IPs it can ever resolve are IPs on that link. A remote server is not there and cannot answer. This is the mechanical consequence of "IP is end-to-end, MAC is hop-to-hop": the IP header carries the true destination unchanged across the whole path, while the frame around it is rebuilt at every hop for the <em>next</em> machine only. The routing decision picks that next hop; ARP is only ever called afterwards, to look up its MAC.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating ARP as the layer-2 sibling of DNS, and expecting it to behave like one.
+          <pre><code class="lang-text">DNS:  name → IP    | layer 7 | global scope   | queries a configured server
+ARP:  IP   → MAC   | layer 2 | one link only  | queries the whole local segment</code></pre>
+          <p>Why it breaks: the "resolve then cache with an expiry" pattern really is shared, which is exactly what makes the mismatch easy to miss. But DNS reaches across the internet to a server you configured, whereas ARP shouts into a single broadcast domain and stops there. Expecting to resolve a distant address with ARP, or expecting ARP traffic to appear anywhere beyond the local segment, both follow from the same confusion.</p>
+        </div>
+
+        <h3>Two boundaries worth remembering</h3>
+        <p>ARP is <strong>IPv4-only</strong>. IPv6 does not use it at all; the equivalent job is done by the <strong>Neighbor Discovery Protocol</strong> (NDP), which runs over ICMPv6 and uses multicast rather than broadcast — the same concept of resolving a next hop on the local link, with a different and considerably more capable mechanism.</p>
+        <p>And ARP is <strong>link-local by construction</strong>. Its scope is exactly the broadcast domain, which means the segmentation that VLANs impose also segments ARP: hosts in different VLANs never see each other's requests, and reaching between them requires a router, whose MAC each side resolves separately.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation</strong>
+        <span>Explains why a destination MAC is mandatory before a frame can be built — the exact gap in the header that ARP exists to fill.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>The frame ARP rides in: where <code>0x0806</code> and <code>ff:ff:ff:ff:ff:ff</code> live, and the MAC-spoofing weakness that ARP spoofing compounds.</span>
+      </a>
+      <a class="related-card" href="../how-switches-work/index.html" data-entry="how-switches-work">
+        <strong>How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter</strong>
+        <span>What actually delivers the broadcast request and the unicast reply — and the forwarding privacy that ARP spoofing bypasses by poisoning endpoints instead.</span>
+      </a>
+      <a class="related-card" href="../vlans/index.html" data-entry="vlans">
+        <strong>VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging</strong>
+        <span>Defines the broadcast domain that bounds every ARP request, and therefore how far address resolution can reach.</span>
+      </a>
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End — A Packet's Journey</strong>
+        <span>Where next-hop-only resolution sits in the full journey: "IP end-to-end, MAC hop-to-hop", with ARP run afresh at every hop.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>RFC 826 — An Ethernet Address Resolution Protocol (1982)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A laptop at <code>192.168.1.10</code>, with default gateway <code>192.168.1.1</code>, opens a connection to <code>93.184.215.14</code>. Whose MAC address does it resolve with ARP?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The server's, at <code>93.184.215.14</code> — that is the destination, so that is what must be resolved.</button>
+            <button class="option" data-correct="true">The gateway's, at <code>192.168.1.1</code> — the destination is off-subnet, so the next hop is the router.</button>
+            <button class="option" data-correct="false">Both — first the gateway's, then the server's, so the frame can carry the full path.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Layer 3 decides first: the destination is not on the local subnet, so the next hop is the default gateway, and it is that IP that gets handed to ARP. A host only ever ARPs for addresses on its own link — the server is unreachable directly and would never answer.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why is the ARP request a broadcast while the reply is a unicast — what asymmetry in knowledge forces it?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Broadcasts are faster, so the time-critical request uses one and the less urgent reply does not.</button>
+            <button class="option" data-correct="true">The requester does not yet know the target's MAC, so it must address the question to everyone; the responder learned the asker's MAC from the request's sender fields, so it can answer one machine directly.</button>
+            <button class="option" data-correct="false">The switch converts the reply to a unicast; the responder actually broadcasts it too.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">It is purely about what each side knows. Not knowing the target's MAC is the whole reason for asking, so the question has no choice but to go to <code>ff:ff:ff:ff:ff:ff</code>. The request carries the sender's own IP and MAC, so the answer already has a precise address to go to.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A backup router takes over the gateway IP after the primary fails, but sends no gratuitous ARP. Connectivity is down for several minutes even though the backup is healthy. Trace exactly why, and why the outage eventually ends on its own.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Every host on the segment still holds a cache entry mapping the gateway IP to the <strong>dead primary's MAC</strong>. The gateway IP never changed, so nothing signals to any host that its entry is now wrong — and the cache is consulted for speed, not verified for correctness. Hosts keep building frames addressed to a MAC nobody answers to, and the switch dutifully forwards them into a dead port. The outage ends only when each entry independently hits its expiry (minutes), at which point that host re-broadcasts a request and the backup answers with its own MAC. A gratuitous ARP from the backup would have rewritten every cache on the segment at once, turning a multi-minute outage into a near-seamless failover — which is precisely why it is the mechanism first-hop redundancy protocols depend on.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (ARP request/reply/cache) ─────────────
+    const steps = [
+      { activate: ['#node-a', '#cache-empty'],
+        explanation: 'Host A wants to send to 192.168.1.10 — same subnet, so that address is the next hop. It checks its ARP cache first and finds nothing. Until a MAC is known, no frame can be built and nothing can leave the machine.' },
+      { activate: ['#node-a', '#lbl-request', '#bcast .edge-line'],
+        explanation: 'Cache miss, so A asks. Not knowing the target’s MAC is exactly why it must address the question to ff:ff:ff:ff:ff:ff — the broadcast address. The request carries A’s own IP and MAC in its sender fields.' },
+      { activate: ['#lbl-request', '#bcast .edge-line', '#node-b', '#node-c', '#node-d', '#node-e'],
+        explanation: 'Because it is a broadcast, the frame is delivered to every device in the broadcast domain — not just the intended one. Four network cards interrupt their hosts; four IP stacks are handed the same question.' },
+      { activate: ['#node-b', '#node-c', '#node-e', '#ignore-b', '#ignore-c', '#ignore-e'],
+        explanation: 'Each host compares the target IP in the request against its own. Three do not match, so they silently discard the frame. This is the cost of the broadcast: every host on the segment does a little work to conclude the message was not for it.' },
+      { activate: ['#node-d', '#match-d'],
+        explanation: 'Host D matches — 192.168.1.10 is its address. Before answering, it records the sender fields it just received: 192.168.1.5 → aa:aa:aa:11:11:11 now sits in D’s own cache. Resolution is mutual; the asker is identified by the act of asking.' },
+      { activate: ['#node-d', '#msg-reply', '#lbl-reply', '#node-a'],
+        explanation: 'D replies — and because it learned A’s MAC from the request, the answer is a unicast addressed to aa:aa:aa:11:11:11 alone. One frame, one recipient. B, C and E never see it. This is the asymmetry at the heart of the protocol: broadcast the question, unicast the answer.' },
+      { activate: ['#node-a', '#cache-row'],
+        explanation: 'A writes the mapping into its ARP cache and can now build the frame immediately. Every subsequent packet to 192.168.1.10 is a cache hit — no broadcast at all — until the entry expires after a few minutes, at which point a stale mapping would correct itself.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+      'ethernet':                    { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'how-switches-work':           { title: 'How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter', summary: 'Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.' },
+      'vlans':                       { title: 'VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging', summary: 'Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.' },
+      'how-internet-works':          { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Relational Data Model — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Relational Data Model</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">The relational model organizes data as <strong>relations</strong> — unordered sets of rows sharing the same columns — and lets you <em>describe</em> the result you want instead of walking pointer chains to fetch it. Codd's 1970 insight still defines every SQL database: a relation is a set, and SQL is applied set theory.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">relational-model</span>
+        <span class="badge tag">keys</span>
+        <span class="badge tag">constraints</span>
+        <span class="badge tag">foreign-keys</span>
+        <span class="badge tag">schema-design</span>
+        <span class="meta-dates">Created 2026-05-29 · Updated 2026-05-29</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>Relation (table)</dt>
+        <dd>A set of <em>tuples</em> (rows) that all share the same named <em>attributes</em> (columns). The formal name is "relation"; SQL calls it a table.</dd>
+
+        <dt>Tuple &amp; attribute</dt>
+        <dd>A tuple is one row (a single data point); an attribute is one named column. A column's <em>domain</em> is the set of allowed values — its data type plus constraints.</dd>
+
+        <dt>Key hierarchy</dt>
+        <dd><strong>Superkey</strong> ⊇ <strong>candidate key</strong> (a <em>minimal</em> superkey) → one chosen as the <strong>primary key</strong> (UNIQUE + NOT NULL). A <strong>composite key</strong> spans several columns; a <strong>foreign key</strong> references another table's key.</dd>
+
+        <dt>Constraint</dt>
+        <dd>A rule the engine enforces on every write: NOT NULL, UNIQUE, PRIMARY KEY, FOREIGN KEY, CHECK, DEFAULT. Constraints push correctness down into the database where it holds for all concurrent writers.</dd>
+
+        <dt>Integrity rules</dt>
+        <dd><strong>Entity integrity</strong>: every row is identifiable (PK is NOT NULL). <strong>Referential integrity</strong>: a foreign key may only point at a row that actually exists.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A single <code>CREATE TABLE</code> packs most of the model into a few lines: a primary key (entity integrity), a unique natural key kept <em>separate</em> from the PK, a non-null business rule enforced with a <code>CHECK</code>, and a server-supplied <code>DEFAULT</code>.</p>
+      <pre><code class="lang-sql">CREATE TABLE products (
+    id     BIGINT        PRIMARY KEY,
+    sku    VARCHAR(64)   NOT NULL UNIQUE,
+    price  NUMERIC(10,2) NOT NULL CHECK (price &gt;= 0),
+    stock  INT           NOT NULL DEFAULT 0 CHECK (stock &gt;= 0)
+);</code></pre>
+      <p>Here <code>id</code> is a <em>surrogate</em> primary key — a meaningless, system-generated number. The meaningful <code>sku</code> is a <em>natural</em> key, but it is kept as a plain <code>UNIQUE</code> constraint rather than the PK, so that a future SKU rename never has to cascade through every foreign key that points here.</p>
+      <p>Now model a many-to-many relationship. The relational model has no direct M:N representation, so it is decomposed into two one-to-many links through a <strong>junction table</strong> with a composite primary key:</p>
+      <pre><code class="lang-sql">CREATE TABLE enrollments (
+    student_id  BIGINT REFERENCES students(id),
+    course_id   BIGINT REFERENCES courses(id),
+    enrolled_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (student_id, course_id)   -- composite PK
+);</code></pre>
+      <p>The two <code>REFERENCES</code> clauses are foreign keys enforcing referential integrity — you cannot enroll a student that does not exist. The composite PK <code>(student_id, course_id)</code> guarantees a student can't enroll in the same course twice. And <code>enrolled_at</code> shows how junction tables often grow their own attributes, becoming first-class entities.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture three tables as three boxes. The trick is that <strong>nothing</strong> physically connects them — there are no pointers. A row in one table "relates" to a row in another only because it stores a <em>value</em> that matches a key column elsewhere. Foreign keys are the rule that says "this value must match a real one over there." Walk the steps to see how a primary key becomes a foreign key, and how a junction table resolves a many-to-many link.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 380" aria-label="Two parent tables (students, courses) joined by an enrollments junction table via foreign keys">
+          <!-- students table -->
+          <g id="tbl-students" class="step-el">
+            <rect x="20" y="30" width="180" height="110" rx="6" fill="var(--card-bg, #f4f4f8)" stroke="var(--border, #888)" stroke-width="1.5"/>
+            <rect x="20" y="30" width="180" height="26" rx="6" fill="var(--accent, #5b7fff)" opacity="0.85"/>
+            <text x="110" y="48" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff">students</text>
+            <text x="34" y="78" font-size="12" font-weight="bold" fill="var(--text, #222)">id 🔑</text>
+            <text x="34" y="100" font-size="12" fill="var(--text, #222)">name</text>
+            <text x="34" y="122" font-size="12" fill="var(--text, #222)">email</text>
+          </g>
+
+          <!-- courses table -->
+          <g id="tbl-courses" class="step-el">
+            <rect x="440" y="30" width="180" height="110" rx="6" fill="var(--card-bg, #f4f4f8)" stroke="var(--border, #888)" stroke-width="1.5"/>
+            <rect x="440" y="30" width="180" height="26" rx="6" fill="var(--accent, #5b7fff)" opacity="0.85"/>
+            <text x="530" y="48" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff">courses</text>
+            <text x="454" y="78" font-size="12" font-weight="bold" fill="var(--text, #222)">id 🔑</text>
+            <text x="454" y="100" font-size="12" fill="var(--text, #222)">title</text>
+            <text x="454" y="122" font-size="12" fill="var(--text, #222)">credits</text>
+          </g>
+
+          <!-- enrollments junction table -->
+          <g id="tbl-enroll" class="step-el">
+            <rect x="200" y="230" width="240" height="120" rx="6" fill="var(--card-bg, #f4f4f8)" stroke="var(--border, #888)" stroke-width="1.5"/>
+            <rect x="200" y="230" width="240" height="26" rx="6" fill="#d08a2e" opacity="0.9"/>
+            <text x="320" y="248" text-anchor="middle" font-size="13" font-weight="bold" fill="#fff">enrollments (junction)</text>
+            <text x="214" y="278" font-size="12" font-weight="bold" fill="var(--text, #222)">student_id 🔗</text>
+            <text x="214" y="300" font-size="12" font-weight="bold" fill="var(--text, #222)">course_id 🔗</text>
+            <text x="214" y="322" font-size="12" fill="var(--text, #222)">enrolled_at</text>
+            <text x="214" y="344" font-size="10.5" fill="var(--muted, #777)">PK (student_id, course_id)</text>
+          </g>
+
+          <!-- FK edge: enrollments.student_id -> students.id -->
+          <g id="fk-student" class="step-el">
+            <path d="M 220 270 C 120 250 110 180 110 145" fill="none" stroke="#d08a2e" stroke-width="2.5" stroke-dasharray="6 4"/>
+            <text x="70" y="200" font-size="10.5" fill="#d08a2e" font-weight="bold">FK → students.id</text>
+          </g>
+
+          <!-- FK edge: enrollments.course_id -> courses.id -->
+          <g id="fk-course" class="step-el">
+            <path d="M 420 292 C 530 270 530 180 530 145" fill="none" stroke="#d08a2e" stroke-width="2.5" stroke-dasharray="6 4"/>
+            <text x="540" y="200" font-size="10.5" fill="#d08a2e" font-weight="bold">FK → courses.id</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation"></p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p><strong>SQL is not the relational model.</strong> The relational model is Codd's <em>mathematical theory</em>; SQL is a concrete language that implements it imperfectly. Nearly every SQL "gotcha" is a spot where SQL deliberately bent a relational rule:</p>
+        <table class="compare">
+          <thead><tr><th>Property</th><th>Relational model</th><th>SQL</th></tr></thead>
+          <tbody>
+            <tr><td>Duplicate rows</td><td data-score="90">Forbidden (a relation is a set)</td><td data-score="35">Allowed (tables are bags / multisets)</td></tr>
+            <tr><td>NULLs</td><td data-score="85">Absent from Codd's original model</td><td data-score="40">Allowed, with three-valued logic</td></tr>
+            <tr><td>Column order</td><td data-score="80">Logically irrelevant</td><td data-score="45">Defined and ordered</td></tr>
+            <tr><td>Row order</td><td data-score="85">No inherent order</td><td data-score="50">No guarantee without ORDER BY</td></tr>
+          </tbody>
+        </table>
+
+        <div class="antipattern">
+          <strong>Anti-pattern: relying on row order.</strong> A relation has no inherent order, so this is a coin flip:
+          <pre><code class="lang-sql">-- "give me the latest signup" — WRONG
+SELECT * FROM users LIMIT 1;        -- returns *some* row, not the newest</code></pre>
+          <p>Postgres returns heap/scan order, which changes after every <code>UPDATE</code> or <code>VACUUM</code>. Always sort explicitly: <code>ORDER BY created_at DESC LIMIT 1</code>.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern: a natural key as the primary key.</strong> Using <code>email</code> as the PK looks tidy until a user changes their email:
+          <pre><code class="lang-sql">UPDATE users SET email = 'new@x.com' WHERE email = 'old@x.com';
+-- every FK that referenced the old email is now dangling (or must cascade)</code></pre>
+          <p>Changing a PK ripples through every foreign key that references it. Use a stable surrogate key (<code>BIGINT</code> sequence or UUID) as the PK and keep <code>email</code> as a <code>UNIQUE</code> constraint.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Gotcha: <code>NULL = NULL</code> is UNKNOWN, not true.</strong> Because SQL uses three-valued logic, a standard <code>UNIQUE</code> constraint treats two NULLs as <em>not equal</em> — so it permits multiple NULL rows:
+          <pre><code class="lang-sql">CREATE TABLE t (code VARCHAR UNIQUE);
+INSERT INTO t VALUES (NULL), (NULL);   -- both succeed!</code></pre>
+          <p>If you need at most one missing value, you need a different tool (e.g. <code>NULLS NOT DISTINCT</code> in modern Postgres, or a partial unique index).</p>
+        </div>
+
+        <p><strong>Referential actions</strong> decide what happens to children when a parent row is deleted: <code>RESTRICT</code>/<code>NO ACTION</code> (default) blocks the delete, <code>CASCADE</code> deletes the children too (powerful but one delete can wipe a large subtree), and <code>SET NULL</code> orphans children by nulling their FK.</p>
+
+        <p><strong>Atomicity (1NF):</strong> each cell should hold a single atomic value, not a list. <code>tags = "red,blue,green"</code> violates this in spirit; Postgres arrays and JSONB deliberately bend the rule as a denormalization tradeoff.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../data-models-overview/index.html" data-entry="data-models-overview">
+        <strong>Data Models Overview</strong>
+        <span>Where the relational model sits among document, key-value, columnar, and graph — and how to pick by access pattern.</span>
+      </a>
+      <a class="related-card" href="../schema-design-normalization/index.html" data-entry="schema-design-normalization">
+        <strong>Schema Design — ER Diagrams &amp; Normalization</strong>
+        <span>Turning these tables and keys into a clean schema via functional dependencies and 1NF→BCNF.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://dl.acm.org/doi/10.1145/362384.362685" target="_blank" rel="noopener">A Relational Model of Data for Large Shared Data Banks (Codd, 1970)</a> — fetched 2026-05-29</li>
+          <li><a href="https://www.postgresql.org/docs/current/ddl-constraints.html" target="_blank" rel="noopener">PostgreSQL Documentation — Data Definition (Constraints)</a> — fetched 2026-05-29</li>
+          <li><a href="https://en.wikipedia.org/wiki/Relational_model" target="_blank" rel="noopener">Wikipedia — Relational model</a> — fetched 2026-05-29</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">The relational model says a relation is a <em>set</em>, yet SQL tables can hold duplicate rows. Which feature lets you opt back into set semantics for storage?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">An <code>ORDER BY</code> clause</button>
+            <button class="option" data-correct="true">A <code>PRIMARY KEY</code> or <code>UNIQUE</code> constraint</button>
+            <button class="option" data-correct="false">A <code>CHECK</code> constraint</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">SQL defaults to bags (multisets) for performance; a <code>PRIMARY KEY</code>/<code>UNIQUE</code> constraint forbids storing duplicate rows. (<code>SELECT DISTINCT</code> only dedups a result set.)</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Which key is defined as a <em>minimal</em> superkey — one where removing any column breaks uniqueness?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Primary key</button>
+            <button class="option" data-correct="true">Candidate key</button>
+            <button class="option" data-correct="false">Foreign key</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A candidate key is a minimal superkey; one candidate key is then chosen as the primary key. <code>{id, email}</code> is a superkey but not a candidate key, since <code>email</code> alone suffices.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Model <code>posts</code> and <code>tags</code> where a post has many tags and a tag has many posts. What does this require?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>A many-to-many relationship, which the relational model can't represent directly — decompose it into two one-to-many links via a junction table:</p>
+            <pre><code class="lang-sql">CREATE TABLE post_tags (
+    post_id BIGINT REFERENCES posts(id),
+    tag_id  BIGINT REFERENCES tags(id),
+    PRIMARY KEY (post_id, tag_id)
+);</code></pre>
+            <p>The composite primary key prevents tagging the same post with the same tag twice, and the two foreign keys enforce that both the post and the tag exist.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why does a <code>UNIQUE</code> column sometimes allow two <code>NULL</code> values?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>SQL uses three-valued logic: <code>NULL = NULL</code> evaluates to <code>UNKNOWN</code>, not true. Since the two NULLs are never proven equal, a standard <code>UNIQUE</code> constraint treats them as distinct and admits both rows. To forbid this you need <code>NULLS NOT DISTINCT</code> (newer Postgres) or a partial unique index.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      recolorHeatmap();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused for SOME calibration, kept for safety) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function recolorHeatmap() {
+      document.querySelectorAll('td[data-score]').forEach(cell => {
+        const score = +cell.dataset.score;
+        cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+      });
+    }
+    recolorHeatmap();
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls ──────────────────────────────────────
+    const steps = [
+      { activate: ['#tbl-students'], explanation: 'A parent table. Its primary key `id` (🔑) uniquely identifies each student — entity integrity means this column is UNIQUE and NOT NULL.' },
+      { activate: ['#tbl-courses'], explanation: 'A second independent parent table. Note: nothing physically links it to students — relational tables connect only by matching values, never by pointers.' },
+      { activate: ['#tbl-enroll'], explanation: 'A junction table resolves the many-to-many link. Its composite primary key (student_id, course_id) makes each (student, course) pair appear at most once.' },
+      { activate: ['#tbl-enroll', '#tbl-students', '#fk-student'], explanation: 'enrollments.student_id is a foreign key: every value here must match a real students.id. This is referential integrity — you cannot enroll a student that does not exist.' },
+      { activate: ['#tbl-enroll', '#tbl-courses', '#fk-course'], explanation: 'enrollments.course_id is the second foreign key, pointing at courses.id. Two 1:N foreign keys together express one M:N relationship — and enrolled_at gives the junction table its own attribute.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'data-models-overview':       { title: 'Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph', summary: 'The five data models, how to pick by access pattern, relational-vs-document decision tests, and what Mongoose populate / $lookup really do.' },
+      'schema-design-normalization': { title: 'Schema Design — ER Diagrams & Normalization (1NF → BCNF)', summary: 'ER modeling (entities/attributes/relationships, cardinality, crow’s foot, weak entities) and normalization 1NF→BCNF via functional dependencies and the three anomalies.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', () => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

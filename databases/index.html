@@ -1,0 +1,459 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>databases — Learning Book</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="landing-header">
+    <div class="landing-nav">
+      <a class="back-link" href="../global-index.html">⊞ All topics</a>
+    </div>
+    <h1>databases</h1>
+    <p class="subtitle">13 entries · last updated 2026-06-15</p>
+    <div class="controls">
+      <input class="search" type="search" placeholder="Search entries…" aria-label="Search entries" />
+      <div class="tag-filter" role="group" aria-label="Filter by tag">
+        <button class="tag-chip" data-tag="indexes">indexes</button>
+        <button class="tag-chip" data-tag="fundamentals">fundamentals</button>
+        <button class="tag-chip" data-tag="schema-design">schema-design</button>
+        <button class="tag-chip" data-tag="normalization">normalization</button>
+        <button class="tag-chip" data-tag="denormalization">denormalization</button>
+        <button class="tag-chip" data-tag="data-models">data-models</button>
+        <button class="tag-chip" data-tag="performance">performance</button>
+        <button class="tag-chip" data-tag="query-performance">query-performance</button>
+        <button class="tag-chip" data-tag="b-tree">b-tree</button>
+        <button class="tag-chip" data-tag="composite-index">composite-index</button>
+        <button class="tag-chip" data-tag="covering-index">covering-index</button>
+        <button class="tag-chip" data-tag="clustered-index">clustered-index</button>
+        <button class="tag-chip" data-tag="partial-index">partial-index</button>
+        <button class="tag-chip" data-tag="expression-index">expression-index</button>
+        <button class="tag-chip" data-tag="nosql">nosql</button>
+        <button class="tag-chip" data-tag="system-design">system-design</button>
+        <button class="tag-chip" data-tag="transactions">transactions</button>
+        <button class="tag-chip" data-tag="acid">acid</button>
+        <button class="tag-chip" data-tag="mvcc">mvcc</button>
+        <button class="tag-chip" data-tag="isolation-levels">isolation-levels</button>
+        <button class="tag-chip" data-tag="two-phase-locking">two-phase-locking</button>
+        <button class="tag-chip" data-tag="deadlock">deadlock</button>
+        <button class="tag-chip" data-tag="storage">storage</button>
+        <button class="tag-chip" data-tag="wal">wal</button>
+        <button class="tag-chip" data-tag="vacuum">vacuum</button>
+        <button class="tag-chip" data-tag="buffer-pool">buffer-pool</button>
+        <button class="tag-chip" data-tag="interview-priority">interview-priority</button>
+        <button class="tag-chip clear" data-tag="">clear</button>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main class="entries-grid" id="entries-grid">
+    <a class="entry-card" href="entries/buffer-pool/index.html"
+       data-tags="buffer-pool shared-buffers page-cache buffer-manager buffer-tag buffer-descriptor clock-sweep usage-count pin refcount eviction dirty-page bgwriter checkpointer ring-buffer buffer-access-strategy double-buffering effective-cache-size work-mem pg-buffercache interview-priority"
+       data-title="buffer pool / page cache — how a db manages memory"
+       data-desc="8kb pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx lru), wal-flush-before-dirty-write, ring buffers, and double buffering vs the os cache.">
+      <h2 class="entry-title">Buffer Pool / Page Cache — How a DB Manages Memory</h2>
+      <p class="entry-desc">8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">buffer-pool</span>
+        <span class="badge tag">shared-buffers</span>
+        <span class="badge tag">clock-sweep</span>
+        <span class="badge tag">bgwriter</span>
+        <span class="badge tag">ring-buffer</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-06-30</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/write-ahead-log/index.html"
+       data-tags="wal write-ahead-log durability crash-recovery redo lsn pd_lsn checkpoint redo-point full-page-write backup-block torn-page synchronous-commit wal-level pitr replication replication-slot group-commit idempotent-recovery interview-priority"
+       data-title="write-ahead log (wal) — crash recovery &amp; the durability guarantee"
+       data-desc="log-first rule, lsn/pd_lsn recovery replay (idempotent), checkpoints &amp; redo point, full-page writes vs torn pages, synchronous_commit, redo-only wal, and pitr/replication.">
+      <h2 class="entry-title">Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</h2>
+      <p class="entry-desc">Log-first rule, LSN/pd_lsn recovery replay (idempotent), checkpoints &amp; redo point, full-page writes vs torn pages, synchronous_commit, redo-only WAL, and PITR/replication.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">wal</span>
+        <span class="badge tag">durability</span>
+        <span class="badge tag">crash-recovery</span>
+        <span class="badge tag">checkpoint</span>
+        <span class="badge tag">full-page-write</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 6</span>
+        <span class="meta-dates">2026-06-30</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/table-bloat-and-autovacuum/index.html"
+       data-tags="vacuum autovacuum table-bloat dead-tuple vacuum-full pg-repack free-space-map visibility-map all-visible all-frozen freezing xid-wraparound relfrozenxid oldest-xmin anti-wraparound replication-slot reindex planner-statistics analyze interview-priority"
+       data-title="table bloat &amp; autovacuum — reclaiming what mvcc leaves behind"
+       data-desc="dead tuples → bloat; plain vacuum (reusable, fsm) vs vacuum full/pg_repack (shrink), the vm's two bits, freezing &amp; xid wraparound, and autovacuum triggers/tuning.">
+      <h2 class="entry-title">Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</h2>
+      <p class="entry-desc">Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM's two bits, freezing &amp; XID wraparound, and autovacuum triggers/tuning.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">vacuum</span>
+        <span class="badge tag">autovacuum</span>
+        <span class="badge tag">table-bloat</span>
+        <span class="badge tag">freezing</span>
+        <span class="badge tag">xid-wraparound</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 6</span>
+        <span class="meta-dates">2026-06-17</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/mvcc/index.html"
+       data-tags="mvcc multi-version xmin xmax cmin cmax t_ctid version-chain snapshot xip-list visibility-check commit-log clog pg_xact hint-bits t_infomask hot-update heap-only-tuple lp-redirect dead-tuple oldest-xmin xmin-horizon snapshot-isolation interview-priority"
+       data-title="mvcc — how postgres implements multi-version concurrency control"
+       data-desc="version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), hot updates, and the oldestxmin horizon.">
+      <h2 class="entry-title">MVCC — How Postgres Implements Multi-Version Concurrency Control</h2>
+      <p class="entry-desc">Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">xmin</span>
+        <span class="badge tag">xmax</span>
+        <span class="badge tag">snapshot</span>
+        <span class="badge tag">hot-update</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 8</span>
+        <span class="meta-dates">2026-06-17</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/heap-storage-layout/index.html"
+       data-tags="storage heap-file page block 8kb-page line-pointer slot item-pointer tuple ctid tid relfilenode fork free-space-map visibility-map toast segment torn-page full-page-write indirection interview-priority"
+       data-title="how data is stored on disk — heap files, pages &amp; slots"
+       data-desc="heap files → 8 kb pages → line-pointer slots; tid indirection (logical slot vs physical bytes), relfilenode rewrites, forks/toast, and the torn-page → full-page-write hazard.">
+      <h2 class="entry-title">How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</h2>
+      <p class="entry-desc">Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">storage</span>
+        <span class="badge tag">heap-file</span>
+        <span class="badge tag">page</span>
+        <span class="badge tag">line-pointer</span>
+        <span class="badge tag">ctid</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 8</span>
+        <span class="meta-dates">2026-06-17</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/deadlocks/index.html"
+       data-tags="transactions deadlock coffman-conditions mutual-exclusion hold-and-wait no-preemption circular-wait wait-for-graph deadlock-detection deadlock-timeout 40p01 lock-ordering livelock conservative-2pl interview-priority"
+       data-title="deadlocks — detection, prevention &amp; the coffman conditions"
+       data-desc="the four coffman conditions as the master key, the four handling strategies, postgres detect-and-abort (deadlock_timeout, 40p01, consistent lock ordering), and livelock vs deadlock.">
+      <h2 class="entry-title">Deadlocks — Detection, Prevention &amp; the Coffman Conditions</h2>
+      <p class="entry-desc">The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">deadlock</span>
+        <span class="badge tag">circular-wait</span>
+        <span class="badge tag">wait-for-graph</span>
+        <span class="badge tag">livelock</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 3</span>
+        <span class="meta-dates">2026-06-15</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/two-phase-locking/index.html"
+       data-tags="transactions two-phase-locking 2pl strict-2pl ss2pl conservative-2pl shared-lock exclusive-lock lock-compatibility lock-point serializability pessimistic-concurrency cascading-aborts lock-upgrade mvcc interview-priority"
+       data-title="two-phase locking (2pl)"
+       data-desc="the growing/shrinking phases and lock-point serializability, s/x compatibility, the basic→strict→ss2pl→conservative variants with a lock-timing trace, and postgres's mvcc+strict-2pl hybrid.">
+      <h2 class="entry-title">Two-Phase Locking (2PL)</h2>
+      <p class="entry-desc">The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres's MVCC+strict-2PL hybrid.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">two-phase-locking</span>
+        <span class="badge tag">strict-2pl</span>
+        <span class="badge tag">lock-point</span>
+        <span class="badge tag">serializability</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-06-12</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/isolation-levels/index.html"
+       data-tags="transactions isolation-levels read-uncommitted read-committed repeatable-read serializable dirty-read non-repeatable-read phantom-read write-skew serialization-anomaly mvcc snapshot-isolation ssi predicate-locks 40001 interview-priority"
+       data-title="isolation levels &amp; read anomalies"
+       data-desc="the anomaly×level table, mvcc snapshot timing per level, postgres-vs-ansi divergence, write skew, ssi/predicate locks, and the 40001 retry contract.">
+      <h2 class="entry-title">Isolation Levels &amp; Read Anomalies</h2>
+      <p class="entry-desc">The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">isolation-levels</span>
+        <span class="badge tag">phantom-read</span>
+        <span class="badge tag">write-skew</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-06-10</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/acid-properties/index.html"
+       data-tags="transactions acid atomicity consistency isolation durability wal write-ahead-log mvcc savepoint commit rollback serializability interview-priority"
+       data-title="acid properties"
+       data-desc="the four transaction guarantees: wal-backed atomicity (undo) &amp; durability (redo), why c is the application's job, isolation as a tunable dial, and the wedding-ceremony model.">
+      <h2 class="entry-title">ACID Properties</h2>
+      <p class="entry-desc">The four transaction guarantees: WAL-backed atomicity (undo) &amp; durability (redo), why C is the application's job, isolation as a tunable dial, and the wedding-ceremony model.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">acid</span>
+        <span class="badge tag">wal</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">savepoint</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-06-10</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/partial-and-expression-indexes/index.html"
+       data-tags="indexes partial-index expression-index functional-index unique-constraint soft-delete case-insensitive write-tax interview-priority"
+       data-title="partial &amp; expression indexes"
+       data-desc="index a subset of rows (partial) or a transformed value (expression); partial unique for scoped constraints, case-insensitive uniqueness, and combining both.">
+      <h2 class="entry-title">Partial &amp; Expression Indexes</h2>
+      <p class="entry-desc">Index a subset of rows (partial) or a transformed value (expression); partial UNIQUE for scoped constraints, case-insensitive uniqueness, and combining both.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">partial-index</span>
+        <span class="badge tag">expression-index</span>
+        <span class="badge tag">unique-constraint</span>
+        <span class="badge tag">case-insensitive</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-06-06</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/clustered-vs-nonclustered-indexes/index.html"
+       data-tags="indexes clustered-index non-clustered-index secondary-index index-organized-table heap clustering-factor innodb postgres-cluster uuid interview-priority"
+       data-title="clustered vs non-clustered indexes"
+       data-desc="rows-in-the-leaf vs pointer-to-heap; the secondary-index double-lookup, postgres cluster (one-time, decays) vs innodb permanent pk clustering, and the clustering factor.">
+      <h2 class="entry-title">Clustered vs Non-clustered Indexes</h2>
+      <p class="entry-desc">Rows-in-the-leaf vs pointer-to-heap; the secondary-index double-lookup, Postgres CLUSTER (one-time, decays) vs InnoDB permanent PK clustering, and the clustering factor.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">clustered-index</span>
+        <span class="badge tag">non-clustered-index</span>
+        <span class="badge tag">clustering-factor</span>
+        <span class="badge tag">innodb</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 3</span>
+        <span class="meta-dates">2026-06-06</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/composite-indexes/index.html"
+       data-tags="indexes composite-index multicolumn-index leftmost-prefix column-order equality-before-range selectivity bitmap-scan skip-scan interview-priority"
+       data-title="composite indexes — column order &amp; the leftmost-prefix rule"
+       data-desc="the phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.">
+      <h2 class="entry-title">Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</h2>
+      <p class="entry-desc">The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">composite-index</span>
+        <span class="badge tag">leftmost-prefix</span>
+        <span class="badge tag">column-order</span>
+        <span class="badge tag">equality-before-range</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-06-03</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/covering-indexes/index.html"
+       data-tags="indexes covering-index index-only-scan include-clause heap-fetch visibility-map mvcc payload-columns interview-priority"
+       data-title="covering indexes &amp; index-only scans"
+       data-desc="answering a query from the index alone: include payload columns, eliminating heap fetches, and why postgres's visibility map / mvcc can still force heap access.">
+      <h2 class="entry-title">Covering Indexes &amp; Index-Only Scans</h2>
+      <p class="entry-desc">Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres's visibility map / MVCC can still force heap access.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">covering-index</span>
+        <span class="badge tag">index-only-scan</span>
+        <span class="badge tag">include-clause</span>
+        <span class="badge tag">visibility-map</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-06-03</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/schema-design-normalization/index.html"
+       data-tags="schema-design normalization er-diagram 1nf 2nf 3nf bcnf functional-dependency anomalies fundamentals"
+       data-title="schema design — er diagrams &amp; normalization (1nf → bcnf)"
+       data-desc="er modeling and normalization 1nf→bcnf: functional dependencies, partial/transitive dependencies, the three anomalies, and bcnf's edge case.">
+      <h2 class="entry-title">Schema Design — ER Diagrams &amp; Normalization (1NF → BCNF)</h2>
+      <p class="entry-desc">ER modeling and normalization 1NF→BCNF: functional dependencies, partial/transitive dependencies, the three anomalies, and BCNF's edge case.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">schema-design</span>
+        <span class="badge tag">normalization</span>
+        <span class="badge tag">er-diagram</span>
+        <span class="badge tag">bcnf</span>
+        <span class="badge tag">functional-dependency</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge related">↔ 3</span>
+        <span class="meta-dates">2026-05-31</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/denormalization/index.html"
+       data-tags="denormalization performance materialized-view read-optimization redundancy counter-cache triggers anomalies system-design"
+       data-title="denormalization — when and why to break normalization rules"
+       data-desc="trading write complexity for read speed: counter columns, redundant copies, materialized views, consistency strategies, and the decision framework.">
+      <h2 class="entry-title">Denormalization — When and Why to Break Normalization Rules</h2>
+      <p class="entry-desc">Trading write complexity for read speed: counter columns, redundant copies, materialized views, consistency strategies, and the decision framework.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">denormalization</span>
+        <span class="badge tag">performance</span>
+        <span class="badge tag">materialized-view</span>
+        <span class="badge tag">read-optimization</span>
+        <span class="badge tag">counter-cache</span>
+        <span class="badge tag">system-design</span>
+        <span class="badge related">↔ 4</span>
+        <span class="meta-dates">2026-05-31</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/btree-indexes/index.html"
+       data-tags="indexes b-tree b+tree query-performance sequential-scan range-query expression-index disk-io interview-priority"
+       data-title="b-tree indexes — structure &amp; how range/equality queries use them"
+       data-desc="how a b-tree turns o(n) scans into o(log n) on-disk lookups; equality vs range traversal, order by for free, write tax, and why f(column) defeats the index.">
+      <h2 class="entry-title">B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</h2>
+      <p class="entry-desc">How a B-tree turns O(n) scans into O(log n) on-disk lookups; equality vs range traversal, ORDER BY for free, write tax, and why f(column) defeats the index.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">b-tree</span>
+        <span class="badge tag">query-performance</span>
+        <span class="badge tag">range-query</span>
+        <span class="badge tag">disk-io</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-05-31</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/relational-data-model/index.html"
+       data-tags="relational-model keys constraints schema-design foreign-keys primary-key normalization fundamentals"
+       data-title="relational data model"
+       data-desc="tables as sets of tuples; keys (super/candidate/primary/foreign), constraints, and 1:n/m:n/1:1 relationships — the foundation of sql.">
+      <h2 class="entry-title">Relational Data Model</h2>
+      <p class="entry-desc">Tables as sets of tuples; keys (super/candidate/primary/foreign), constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">relational-model</span>
+        <span class="badge tag">keys</span>
+        <span class="badge tag">constraints</span>
+        <span class="badge tag">foreign-keys</span>
+        <span class="badge tag">primary-key</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge related">↔ 2</span>
+        <span class="meta-dates">2026-05-29</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/data-models-overview/index.html"
+       data-tags="data-models nosql document key-value columnar graph mongodb polyglot-persistence fundamentals system-design"
+       data-title="data models overview — relational vs document vs key-value vs columnar vs graph"
+       data-desc="the five data models, how to pick by access pattern, relational-vs-document decision tests, and what mongoose populate / $lookup really do.">
+      <h2 class="entry-title">Data Models Overview — Relational vs Document vs Key-Value vs Columnar vs Graph</h2>
+      <p class="entry-desc">The five data models, how to pick by access pattern, relational-vs-document decision tests, and what Mongoose populate / $lookup really do.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">data-models</span>
+        <span class="badge tag">nosql</span>
+        <span class="badge tag">document</span>
+        <span class="badge tag">columnar</span>
+        <span class="badge tag">graph</span>
+        <span class="badge tag">system-design</span>
+        <span class="badge related">↔ 2</span>
+        <span class="meta-dates">2026-05-29</span>
+      </div>
+    </a>
+
+    <p class="empty-state" hidden>No entries match. Try a different search or clear filters.</p>
+  </main>
+
+  <script>
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    const cards = Array.from(document.querySelectorAll('.entry-card'));
+    const search = document.querySelector('.search');
+    const emptyState = document.querySelector('.empty-state');
+    const activeTags = new Set();
+
+    function apply() {
+      const q = search.value.trim().toLowerCase();
+      let visible = 0;
+      cards.forEach(card => {
+        const matchText = !q || card.dataset.title.includes(q) || card.dataset.desc.includes(q);
+        const cardTags = new Set(card.dataset.tags.split(' ').filter(Boolean));
+        const matchTag = activeTags.size === 0 || [...activeTags].every(t => cardTags.has(t));
+        card.hidden = !(matchText && matchTag);
+        if (!card.hidden) visible++;
+      });
+      emptyState.hidden = visible > 0;
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (activeTags.size) params.set('tags', [...activeTags].join(','));
+      history.replaceState(null, '', params.toString() ? '?' + params : location.pathname);
+    }
+
+    search.addEventListener('input', () => { clearTimeout(search._t); search._t = setTimeout(apply, 150); });
+
+    document.querySelectorAll('.tag-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const tag = chip.dataset.tag;
+        if (!tag) { activeTags.clear(); document.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active')); }
+        else { activeTags.has(tag) ? activeTags.delete(tag) : activeTags.add(tag); chip.classList.toggle('active'); }
+        apply();
+      });
+    });
+
+    const params = new URLSearchParams(location.search);
+    if (params.get('q')) { search.value = params.get('q'); }
+    if (params.get('tags')) params.get('tags').split(',').forEach(t => {
+      activeTags.add(t);
+      document.querySelector(`.tag-chip[data-tag="${t}"]`)?.classList.add('active');
+    });
+    apply();
+  </script>
+</body>
+</html>

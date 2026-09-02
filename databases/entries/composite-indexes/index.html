@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Local styling for the inline sorted-index SVG */
+    .diagram-svg .step-el { transition: opacity 0.25s ease, fill 0.25s ease; }
+    .diagram-svg .row-rect { opacity: 0.28; }
+    .diagram-svg .row-rect.active { opacity: 1; }
+    .diagram-svg .prefix-band { opacity: 0; }
+    .diagram-svg .prefix-band.active { opacity: 1; }
+    .idx-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    .idx-table th, .idx-table td { border: 1px solid var(--border, #ccc); padding: 0.4rem 0.6rem; text-align: left; }
+    .idx-table code { white-space: nowrap; }
+    .verdict-ok { color: #1a8f4a; font-weight: 600; }
+    .verdict-partial { color: #b8860b; font-weight: 600; }
+    .verdict-no { color: #c0392b; font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A composite index is a single B-tree sorted across several columns at once — like a phone book sorted by <code>(last_name, first_name)</code>. That single sorting fact decides the most consequential design choice in indexing: the <em>order</em> of the columns, which determines which queries the index can serve at all.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">composite-index</span>
+        <span class="badge tag">leftmost-prefix</span>
+        <span class="badge tag">column-order</span>
+        <span class="badge tag">equality-before-range</span>
+        <span class="meta-dates">Created 2026-06-03 · Updated 2026-06-03</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>Composite (multicolumn) index</dt>
+        <dd>A single B-tree built over two or more columns. Rows are sorted by the first column, then by the second within each first-column value, and so on — one structure, not several.</dd>
+
+        <dt>Leftmost-prefix rule</dt>
+        <dd>An index on <code>(A, B, C)</code> can efficiently serve a query only if the query constrains a <em>leading prefix</em> of its columns: <code>A</code>, or <code>A, B</code>, or <code>A, B, C</code> — never <code>B</code> or <code>C</code> in isolation.</dd>
+
+        <dt>Equality-before-range</dt>
+        <dd>The dominant column-ordering rule: columns matched by equality (<code>=</code>) should precede columns matched by a range (<code>&gt;</code>, <code>&lt;</code>, <code>BETWEEN</code>). A range "uses up" the index ordering, so every column after it can only be filtered, not seeked.</dd>
+
+        <dt>Selectivity</dt>
+        <dd>How many rows a predicate eliminates. A more selective equality column (e.g. <code>user_id</code>) narrows the scan faster than a low-selectivity one (e.g. <code>is_deleted</code>). It is a tiebreaker, secondary to query patterns.</dd>
+
+        <dt>Bitmap &amp; skip scans</dt>
+        <dd>Fallbacks when the leading column is missing: a <strong>bitmap scan</strong> combines results from separate single-column indexes; a <strong>skip scan</strong> loops over each distinct leading value — only worthwhile when that column has few distinct values.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Create one index across two columns, then ask which queries it can serve:</p>
+      <pre><code class="lang-sql">CREATE INDEX ON employees (last_name, first_name);
+
+-- usable:  WHERE last_name = 'Adams'                          (leading col)
+-- usable:  WHERE last_name = 'Adams' AND first_name = 'Bob'   (full key)
+-- NOT efficiently usable:
+--          WHERE first_name = 'Bob'   (leading col missing → scattered → Seq Scan)</code></pre>
+      <p>The reason becomes obvious once you picture the actual leaf order the index produces:</p>
+      <pre><code class="lang-text">Adams, Alice
+Adams, Bob
+Baker, Alice    &lt;- first_name ordering RESTARTS within each last_name
+Baker, Carl
+Clark, Dan</code></pre>
+      <p><code>first_name</code> is only sorted <em>within</em> a single <code>last_name</code>. Globally the second column is scattered — every "Alice" is spread across the whole index. That scattering is the root cause of every rule that follows: there is no contiguous run of rows to seek to when you only know <code>first_name</code>.</p>
+      <p>The practical consequence: a composite <code>(a, b)</code> also doubles as a usable index on <code>a</code> alone (its prefix), so a separate <code>INDEX (a)</code> is usually redundant and should be dropped. But it does <em>nothing</em> for <code>WHERE b = …</code>; that needs its own <code>INDEX (b)</code>. The design question is never "which columns" but <strong>"what order, given the actual query patterns."</strong></p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of the index as a phone book sorted by <code>(last, first)</code>. You can look someone up by last name, or by last + first — but never by first name alone, because the first names are scattered across every page. Walk through the query shapes below and watch which contiguous band of rows the index can actually seek to.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">5</span></div>
+        <svg class="diagram-svg" viewBox="0 0 600 320" aria-label="A composite index on (last_name, first_name) shown as sorted rows, highlighting which prefix a query can seek.">
+          <!-- Column headers -->
+          <text x="120" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">last_name (A)</text>
+          <text x="320" y="28" text-anchor="middle" font-size="15" font-weight="700" fill="currentColor">first_name (B)</text>
+          <text x="500" y="28" text-anchor="middle" font-size="13" fill="currentColor" opacity="0.7">sorted leaves →</text>
+
+          <!-- Highlight band drawn behind rows -->
+          <rect id="band" class="prefix-band step-el" x="20" y="44" width="460" height="46" rx="6" fill="#4a90d9" opacity="0"></rect>
+
+          <!-- Row 0: Adams, Alice -->
+          <g id="row-0">
+            <rect class="row-rect step-el" x="24" y="46" width="452" height="40" rx="5" fill="#7fb069"></rect>
+            <text x="120" y="71" text-anchor="middle" font-size="14" fill="#10240f" font-weight="600">Adams</text>
+            <text x="320" y="71" text-anchor="middle" font-size="14" fill="#10240f">Alice</text>
+          </g>
+          <!-- Row 1: Adams, Bob -->
+          <g id="row-1">
+            <rect class="row-rect step-el" x="24" y="92" width="452" height="40" rx="5" fill="#7fb069"></rect>
+            <text x="120" y="117" text-anchor="middle" font-size="14" fill="#10240f" font-weight="600">Adams</text>
+            <text x="320" y="117" text-anchor="middle" font-size="14" fill="#10240f">Bob</text>
+          </g>
+          <!-- Row 2: Baker, Alice -->
+          <g id="row-2">
+            <rect class="row-rect step-el" x="24" y="138" width="452" height="40" rx="5" fill="#e0995e"></rect>
+            <text x="120" y="163" text-anchor="middle" font-size="14" fill="#2a1500" font-weight="600">Baker</text>
+            <text x="320" y="163" text-anchor="middle" font-size="14" fill="#2a1500">Alice</text>
+          </g>
+          <!-- Row 3: Baker, Carl -->
+          <g id="row-3">
+            <rect class="row-rect step-el" x="24" y="184" width="452" height="40" rx="5" fill="#e0995e"></rect>
+            <text x="120" y="209" text-anchor="middle" font-size="14" fill="#2a1500" font-weight="600">Baker</text>
+            <text x="320" y="209" text-anchor="middle" font-size="14" fill="#2a1500">Carl</text>
+          </g>
+          <!-- Row 4: Clark, Dan -->
+          <g id="row-4">
+            <rect class="row-rect step-el" x="24" y="230" width="452" height="40" rx="5" fill="#d98e9e"></rect>
+            <text x="120" y="255" text-anchor="middle" font-size="14" fill="#2a0a12" font-weight="600">Clark</text>
+            <text x="320" y="255" text-anchor="middle" font-size="14" fill="#2a0a12">Dan</text>
+          </g>
+
+          <!-- Annotation for scattered case -->
+          <text x="300" y="298" text-anchor="middle" font-size="13" fill="currentColor" id="scatter-note" opacity="0">↑ the "Alice" rows are scattered — no single band to seek</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation"></p>
+      </div>
+
+      <p>The pattern is consistent: a query can seek to a <strong>contiguous run of leaves</strong> only when it pins down a leading prefix. The moment a column is missing or a range opens, ordering breaks and the index can only <em>filter</em>, not <em>seek</em>.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <h3>Choosing column order — three rules</h3>
+        <p><strong>Rule 1 — Equality columns before range columns (the big one).</strong> Consider <code>WHERE status = 'active' AND created_at &gt; '2026-01-01'</code>:</p>
+        <table class="idx-table">
+          <thead><tr><th>Index</th><th>Verdict</th><th>What happens</th></tr></thead>
+          <tbody>
+            <tr><td><code>(status, created_at)</code></td><td class="verdict-ok">good</td><td>Seek <code>status='active'</code>, then walk the <code>created_at</code> range <em>within</em> that status. Both columns narrow.</td></tr>
+            <tr><td><code>(created_at, status)</code></td><td class="verdict-no">bad</td><td>The range on the leading column opens a wide date span; <code>status</code> is scattered within it → it degrades to a <strong>filter</strong>, not a seek.</td></tr>
+          </tbody>
+        </table>
+        <p>Mechanism: a range scan "uses up" the index ordering. Every column <em>after</em> a range column can only be filtered. Put range columns last among the columns you want to narrow on.</p>
+
+        <p><strong>Rule 2 — Most-frequently-queried column leads.</strong> If half your queries don't filter on <code>A</code>, then <code>A</code> shouldn't lead — those queries can't use the index at all.</p>
+
+        <p><strong>Rule 3 — Selectivity as a tiebreaker.</strong> Among equality columns, put the more selective one first (e.g. <code>user_id</code> over <code>is_deleted</code>) so the scan narrows faster. This is secondary to query patterns.</p>
+
+        <h3 class="antipattern-head">Anti-pattern: a range in the middle silently kills the tail</h3>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming every column in the index narrows the scan, even after a range.
+          <pre><code class="lang-sql">CREATE INDEX ON events (a, b, c);
+
+-- query:
+WHERE a = 1 AND b &gt; 5 AND c = 9;
+--    a → seek      (equality on leading col)
+--    b → range     (walk b &gt; 5 within a = 1)
+--    c → FILTER    (the b-range already broke ordering → c can't seek)</code></pre>
+          <p>Once the range on <code>b</code> opens, the rows are no longer in <code>c</code>-order, so <code>c</code> is evaluated row-by-row as a filter, not a seek. If the equality on <code>c</code> is the more important filter, reorder to <code>(a, c, b)</code> so <code>c</code> can seek and <code>b</code>'s range stays last.</p>
+        </div>
+
+        <h3>Other traps</h3>
+        <ul>
+          <li><strong>Redundant-prefix trap.</strong> Having both <code>INDEX (a)</code> and <code>INDEX (a, b)</code> usually makes <code>(a)</code> dead weight — the composite already serves <code>WHERE a = …</code> via its prefix. Audit and drop the standalone.</li>
+          <li><strong>ORDER BY must match the prefix.</strong> <code>INDEX (a, b)</code> satisfies <code>ORDER BY a, b</code> and <code>WHERE a = … ORDER BY b</code> for free — but not <code>ORDER BY b, a</code>.</li>
+          <li><strong>Don't over-index.</strong> Indexes beyond ~3 columns rarely help unless usage is extremely stylized. Each extra column adds write cost and on-disk size.</li>
+          <li><strong>When patterns are unpredictable</strong>, several single-column indexes combined by a <strong>bitmap scan</strong> can beat one rigid composite. A <strong>skip scan</strong> (Postgres 18+, long in Oracle) can rescue <code>WHERE b = 7</code> on <code>(a, b)</code> by looping over each distinct <code>a</code> — but only pays off when <code>a</code> has few distinct values; otherwise it degrades to a full scan.</li>
+        </ul>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes</strong>
+        <span>The single-column foundation — a composite index is just one B-tree sorted on a tuple of columns instead of one.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Add payload columns so a query is answered from the index alone — the natural next move after getting column order right.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization</strong>
+        <span>The other lever for read performance — trade write complexity for read speed when even the perfect index isn't enough.</span>
+      </a>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>Tables, keys, and constraints — the schema that composite indexes are built on top of.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/indexes-multicolumn.html" target="_blank" rel="noopener">PostgreSQL Documentation — Multicolumn Indexes</a> — fetched 2026-06-03</li>
+          <li><a href="https://use-the-index-luke.com/sql/where-clause/the-equals-operator/concatenated-keys" target="_blank" rel="noopener">Use The Index, Luke — Concatenated Keys (column order)</a> — fetched 2026-06-03</li>
+          <li><a href="https://use-the-index-luke.com/sql/where-clause/searching-for-ranges/greater-less-between-tuning-sql-access-filter-predicates" target="_blank" rel="noopener">Use The Index, Luke — Indexing range conditions</a> — fetched 2026-06-03</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">Given <code>INDEX (a, b, c)</code>, which query can the index <em>not</em> use efficiently?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false"><code>WHERE a = 1</code></button>
+            <button class="option" data-correct="false"><code>WHERE a = 1 AND b = 2</code></button>
+            <button class="option" data-correct="true"><code>WHERE b = 2 AND c = 3</code></button>
+            <button class="option" data-correct="false"><code>WHERE a = 1 AND b = 2 AND c = 3</code></button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>b, c</code> skips the leading column <code>a</code>, so there is no contiguous run of leaves to descend to — the index can't be used, just like searching a phone book by first name.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">For <code>WHERE tenant_id = 42 AND created_at &gt; now() - interval '7 days'</code>, which column order is correct?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true"><code>(tenant_id, created_at)</code></button>
+            <button class="option" data-correct="false"><code>(created_at, tenant_id)</code></button>
+            <button class="option" data-correct="false">Either works equally well</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Equality before range: seek <code>tenant_id = 42</code>, then walk the <code>created_at</code> range within it. In the bad order, the range leads, so <code>tenant_id</code> (the column after the range) degrades to a filter.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A teammate adds <code>INDEX (user_id)</code> alongside an existing <code>INDEX (user_id, created_at)</code>. What's the problem, and what should you do?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The composite already serves <code>WHERE user_id = …</code> through its leftmost prefix, so the standalone <code>(user_id)</code> is redundant. It only adds write cost and disk usage. Drop the standalone <code>(user_id)</code> index.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">On <code>INDEX (a, b, c)</code> with <code>WHERE a = 1 AND b &gt; 100 AND c = 5</code>, which columns narrow the scan and which becomes a filter — and why?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p><code>a</code> seeks (equality on the leading column), <code>b</code> seeks-and-walks the range within <code>a = 1</code>, but <code>c</code> becomes a <strong>filter</strong>. The range on <code>b</code> breaks the index ordering for everything after it, so <code>c</code> can't be seeked. If <code>c</code>'s equality matters more, reorder to <code>(a, c, b)</code>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards ────────────────────────────────────────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    document.querySelectorAll('td[data-score]').forEach(cell => {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls ──────────────────────────────────────
+    const steps = [
+      {
+        activate: ['#row-0', '#row-1', '#band'],
+        band: { x: 24, y: 46, h: 86 },
+        scatter: false,
+        explanation: 'WHERE last_name = \'Adams\'  —  the leading column is constrained, so the index seeks straight to the contiguous "Adams" band. Fully usable.'
+      },
+      {
+        activate: ['#row-1', '#band'],
+        band: { x: 24, y: 92, h: 40 },
+        scatter: false,
+        explanation: 'WHERE last_name = \'Adams\' AND first_name = \'Bob\'  —  a full-key prefix. Within the Adams band, first_name is sorted, so it seeks to exactly one row. Best case.'
+      },
+      {
+        activate: ['#row-0', '#row-1', '#row-2', '#row-3', '#band'],
+        band: { x: 24, y: 46, h: 178 },
+        scatter: false,
+        explanation: 'WHERE last_name BETWEEN \'Adams\' AND \'Baker\'  —  a range on the leading column. The index seeks one contiguous band, but ordering on first_name is now "used up" within that band.'
+      },
+      {
+        activate: ['#row-0', '#row-2', '#scatter-note'],
+        band: null,
+        scatter: true,
+        explanation: 'WHERE first_name = \'Alice\'  —  the leading column is missing. The "Alice" rows (Adams and Baker) are scattered across the index with no band to seek. Result: a Seq Scan.'
+      },
+      {
+        activate: ['#row-0', '#row-1', '#scatter-note'],
+        band: null,
+        scatter: true,
+        explanation: 'Skip-scan rescue (Postgres 18+): for WHERE first_name = \'Bob\', the planner loops over each distinct last_name and seeks (last_name = N, first_name = \'Bob\'). Only worthwhile when last_name has few distinct values.'
+      }
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+    const band = document.getElementById('band');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        const s = steps[i];
+        if (s.band && band) {
+          band.setAttribute('x', s.band.x);
+          band.setAttribute('y', s.band.y);
+          band.setAttribute('height', s.band.h);
+        }
+        if (s.activate) s.activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = s.explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'btree-indexes':        { title: 'B-tree Indexes', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, ORDER BY for free, and why f(column) defeats the index.' },
+      'covering-indexes':     { title: 'Covering Indexes & Index-Only Scans', summary: "Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres's visibility map / MVCC can still force heap access." },
+      'denormalization':      { title: 'Denormalization', summary: 'Trading write complexity for read speed: counter columns, redundant copies, materialized views, the consistency burden, and the denormalize-only-when framework.' },
+      'relational-data-model': { title: 'Relational Data Model', summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.' }
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

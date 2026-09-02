@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Covering Indexes &amp; Index-Only Scans — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Covering Indexes &amp; Index-Only Scans</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A <strong>covering index</strong> carries every column a query needs inside the index itself, so the database answers from the index alone and never visits the table heap. That heap-free execution — the <strong>index-only scan</strong> — eliminates the random-I/O hop that dominates query cost at scale, and it is the single biggest tuning lever after simply <em>having</em> an index.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">covering-index</span>
+        <span class="badge tag">index-only-scan</span>
+        <span class="badge tag">include-clause</span>
+        <span class="badge tag">heap-fetch</span>
+        <span class="badge tag">visibility-map</span>
+        <span class="badge tag">mvcc</span>
+        <span class="meta-dates">Created 2026-06-03 · Updated 2026-06-03</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Covering index</dt>
+        <dd>An index that contains every column a particular query references, so that query can be satisfied without ever reading the underlying table.</dd>
+
+        <dt>Index-only scan</dt>
+        <dd>The execution plan that results from a covering index: the database descends the B-tree, reads the answer straight out of the leaf, and skips the heap fetch entirely.</dd>
+
+        <dt>Heap fetch</dt>
+        <dd>The second step of a normal index scan — following the leaf entry's row-pointer (TID) to the row's scattered physical location in the table heap to read columns not stored in the index. This is the random-I/O cost a covering index removes.</dd>
+
+        <dt>INCLUDE / payload column</dt>
+        <dd>A column stored only in the index leaf for retrieval, never used to find or sort rows. Added via <code>INCLUDE (...)</code> (Postgres 11+); leaner than a key column because it is stripped from upper tree nodes.</dd>
+
+        <dt>Visibility map (VM)</dt>
+        <dd>A tiny per-page bitmap in Postgres marking which heap pages are all-visible. An index-only scan checks it to decide whether it can trust the index value or must fall back to the heap for an MVCC visibility check.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Start with the cheapest covering index there is — equality on a key column with the SELECT-ed column riding along as payload:</p>
+      <pre><code class="lang-sql">-- Plain index: filters on id, then heap-fetches the row to read email
+CREATE INDEX ON users (id);
+
+-- Covering index: email rides along in the leaf → index-only scan, no heap
+CREATE INDEX ON users (id) INCLUDE (email);
+
+SELECT email FROM users WHERE id = 42;   -- answered from the index alone</code></pre>
+      <p>The plain index can locate the matching leaf entry, but that entry stores only <code>(id → TID)</code>; reading <code>email</code> requires a heap fetch. Adding <code>INCLUDE (email)</code> stores the email value in the leaf next to the pointer, so the planner can return it directly — an index-only scan.</p>
+
+      <p>A more realistic aggregate, from a sales table. This index covers the query because <em>both</em> the filtered column and the summed column live in the index:</p>
+      <pre><code class="lang-sql">CREATE INDEX ON sales (subsidiary_id) INCLUDE (eur_value);
+
+-- Covered: subsidiary_id finds the rows, eur_value is read from the leaf
+SELECT SUM(eur_value) FROM sales WHERE subsidiary_id = 5;</code></pre>
+      <p>Confirm it actually happened with <code>EXPLAIN</code>. Three plan shapes tell the whole story:</p>
+      <pre><code class="lang-text">Seq Scan          -- no usable index; whole table read
+Index Scan        -- index found rows, then heap-fetched (two-step)
+Index Only Scan   -- covered; heap skipped. Reports "Heap Fetches: N"
+                  --   Heap Fetches: 0  =  perfect, fully index-only</code></pre>
+      <p><code>Heap Fetches</code> counts the rows where the visibility map forced a fallback to the heap. Zero is the target.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of a plain index as a <strong>library catalog card</strong>: it tells you the shelf, then you walk across the building to fetch the book — that walk is the heap fetch. A covering index <strong>prints the answer directly on the card</strong>, so you never leave the catalog. The Postgres twist: before trusting a card, you glance at a tiny "is this card still current?" list (the visibility map) — usually instant, but if the row was recently touched you still have to walk to the shelf.</p>
+      <p>Step through both execution paths below. The top path is a normal <em>Index Scan</em> that must hop to the heap; the bottom path is the <em>Index-Only Scan</em> that returns straight from the leaf. Watch the eliminated heap hop.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 360" aria-label="Comparison of a normal index scan with a heap fetch versus a heap-free index-only scan">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Top path: normal Index Scan ── -->
+          <text x="20" y="30" class="diagram-label" font-weight="700">Index Scan (two-step)</text>
+
+          <g id="node-query-a" class="step-el">
+            <rect x="20" y="45" width="110" height="50" rx="8" class="diag-box" />
+            <text x="75" y="68" text-anchor="middle" class="diagram-label">Query</text>
+            <text x="75" y="84" text-anchor="middle" class="diagram-sub">WHERE id=42</text>
+          </g>
+          <line id="edge-a0" class="step-el diag-edge" x1="130" y1="70" x2="195" y2="70" marker-end="url(#arrow)" />
+
+          <g id="node-btree-a" class="step-el">
+            <rect x="200" y="45" width="120" height="50" rx="8" class="diag-box" />
+            <text x="260" y="68" text-anchor="middle" class="diagram-label">B-tree leaf</text>
+            <text x="260" y="84" text-anchor="middle" class="diagram-sub">id → TID only</text>
+          </g>
+          <line id="edge-a1" class="step-el diag-edge diag-edge-warn" x1="320" y1="70" x2="425" y2="70" marker-end="url(#arrow)" />
+          <text x="372" y="60" text-anchor="middle" class="diagram-sub diag-warn-text">random I/O</text>
+
+          <g id="node-heap-a" class="step-el">
+            <rect x="430" y="45" width="120" height="50" rx="8" class="diag-box diag-box-warn" />
+            <text x="490" y="68" text-anchor="middle" class="diagram-label">Heap row</text>
+            <text x="490" y="84" text-anchor="middle" class="diagram-sub">read email</text>
+          </g>
+          <line id="edge-a2" class="step-el diag-edge" x1="490" y1="95" x2="490" y2="125" marker-end="url(#arrow)" />
+          <g id="node-result-a" class="step-el">
+            <rect x="430" y="130" width="120" height="38" rx="8" class="diag-box diag-box-result" />
+            <text x="490" y="154" text-anchor="middle" class="diagram-label">Result</text>
+          </g>
+
+          <!-- divider -->
+          <line x1="20" y1="200" x2="620" y2="200" class="diag-divider" stroke-dasharray="4 4" />
+
+          <!-- ── Bottom path: Index-Only Scan ── -->
+          <text x="20" y="235" class="diagram-label" font-weight="700">Index-Only Scan (heap skipped)</text>
+
+          <g id="node-query-b" class="step-el">
+            <rect x="20" y="250" width="110" height="50" rx="8" class="diag-box" />
+            <text x="75" y="273" text-anchor="middle" class="diagram-label">Query</text>
+            <text x="75" y="289" text-anchor="middle" class="diagram-sub">WHERE id=42</text>
+          </g>
+          <line id="edge-b0" class="step-el diag-edge" x1="130" y1="275" x2="195" y2="275" marker-end="url(#arrow)" />
+
+          <g id="node-btree-b" class="step-el">
+            <rect x="200" y="250" width="140" height="50" rx="8" class="diag-box diag-box-cover" />
+            <text x="270" y="271" text-anchor="middle" class="diagram-label">B-tree leaf</text>
+            <text x="270" y="288" text-anchor="middle" class="diagram-sub">id → TID + email</text>
+          </g>
+
+          <!-- VM check -->
+          <line id="edge-b1" class="step-el diag-edge" x1="340" y1="275" x2="405" y2="275" marker-end="url(#arrow)" />
+          <g id="node-vm" class="step-el">
+            <rect x="410" y="250" width="100" height="50" rx="8" class="diag-box" />
+            <text x="460" y="271" text-anchor="middle" class="diagram-label">VM check</text>
+            <text x="460" y="288" text-anchor="middle" class="diagram-sub">all-visible?</text>
+          </g>
+
+          <!-- heap-skipped (crossed out) -->
+          <text x="372" y="240" text-anchor="middle" class="diagram-sub diag-skip-text">heap skipped ✕</text>
+
+          <line id="edge-b2" class="step-el diag-edge" x1="460" y1="300" x2="460" y2="325" marker-end="url(#arrow)" />
+          <g id="node-result-b" class="step-el">
+            <rect x="400" y="325" width="120" height="34" rx="8" class="diag-box diag-box-result" />
+            <text x="460" y="347" text-anchor="middle" class="diagram-label">Result</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Key column vs INCLUDE payload</h3>
+        <p>There are two ways to put a column into an index, and choosing wrong wastes space and write throughput.</p>
+        <table class="compare">
+          <thead><tr><th>Aspect</th><th>Key columns <code>(id, email)</code></th><th>INCLUDE payload <code>(id) INCLUDE (email)</code></th></tr></thead>
+          <tbody>
+            <tr><td>Purpose</td><td data-score="55">search, sort, range</td><td data-score="85"><em>just stored</em> for retrieval</td></tr>
+            <tr><td>Sorted in tree?</td><td data-score="40">yes</td><td data-score="90"><strong>no</strong></td></tr>
+            <tr><td>In upper (branch) nodes?</td><td data-score="40">yes — copied to every level</td><td data-score="90"><strong>no</strong> — leaves only</td></tr>
+            <tr><td>Counts toward UNIQUE?</td><td data-score="50">yes</td><td data-score="85">no</td></tr>
+          </tbody>
+        </table>
+        <p>Mental model: <strong>key columns are how you find the row; INCLUDE columns are what you carry back.</strong> Use a composite key only when you actually filter or sort by the column; otherwise <code>INCLUDE</code> keeps the navigational tree lean via suffix truncation (the payload is stripped from branch nodes), whereas a composite copies the second key into every level.</p>
+
+        <h3>The visibility-map caveat — why coverage isn't enough in Postgres</h3>
+        <p>Postgres uses <strong>MVCC</strong>: an UPDATE writes a <em>new</em> row version and marks the old one expired; a DELETE marks a version dead; each transaction sees the version valid when it began. So the heap holds a mix of live, dead, and not-yet-visible rows, and "is this row visible to <em>me</em>?" has a per-transaction answer. The index leaf stores the value but <em>not</em> this visibility bookkeeping. So even a perfectly covering index must consult the visibility map:</p>
+        <pre><code class="lang-text">for each matching index entry:
+    if VM says its page is all-visible:  return value from index   ✅ no heap
+    else:                                heap-fetch to check visibility ⚠️ speedup lost</code></pre>
+        <p><code>VACUUM</code> is what sets VM bits. The consequence: index-only scans shine on <strong>static / read-heavy</strong> tables (bits stay set), but on <strong>write-hot</strong> tables version churn clears the bits, forcing constant fallback — the benefit evaporates. An under-vacuumed table will not get clean index-only scans even with a flawless covering index.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming a covering index stays covering as the query evolves. Extending the <code>WHERE</code> clause silently un-covers it.
+          <pre><code class="lang-sql">-- Covered by  CREATE INDEX ON sales (subsidiary_id) INCLUDE (eur_value)
+SELECT SUM(eur_value) FROM sales WHERE subsidiary_id = 5;          -- Index Only Scan ✅
+
+-- Add one predicate on a column NOT in the index…
+SELECT SUM(eur_value) FROM sales
+WHERE subsidiary_id = 5 AND sale_date > '2026-01-01';             -- drops to Index Scan ✗</code></pre>
+          <p>Why it breaks: <code>sale_date</code> is neither a key nor an INCLUDE column, so it cannot be read from the index. Postgres must heap-fetch each candidate row to read <code>sale_date</code> and apply the filter — the plan degrades from <em>Index Only Scan</em> back to <em>Index Scan</em>. Always re-check <code>EXPLAIN</code> after changing a query.</p>
+        </div>
+
+        <h3>Other trade-offs — when NOT to cover</h3>
+        <ul>
+          <li><strong>It re-taxes writes.</strong> Updating a payload column forces index maintenance: MVCC writes a new heap version, which needs a new index entry carrying the new payload value (the old leaf entry lingers until VACUUM). Changing an INCLUDE'd column also disqualifies Postgres's HOT optimization, which can otherwise skip index updates.</li>
+          <li><strong>Wide payloads bloat the index</strong> → more pages per scan and more cache pressure. Don't INCLUDE large <code>text</code>/<code>json</code> columns.</li>
+          <li><strong>Don't speculatively cover.</strong> Index first without the SELECT list; add INCLUDE only when a <em>measured</em> hot query justifies it.</li>
+        </ul>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>The other way to put a column in an index — as a key, not a payload. Explains why a composite key sorts and bloats where INCLUDE does neither.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</strong>
+        <span>The leaf-and-TID structure a covering index extends, and the write-tax that adding payload columns intensifies.</span>
+      </a>
+      <a class="related-card" href="../clustered-vs-nonclustered-indexes/index.html" data-entry="clustered-vs-nonclustered-indexes">
+        <strong>Clustered vs Non-clustered Indexes</strong>
+        <span>The heap-vs-leaf storage choice; clustering attacks the same random-fetch cost that index-only scans eliminate outright.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization — When and Why to Break Normalization Rules</strong>
+        <span>Same read-vs-write bargain at the schema level: redundant data trading write complexity for read speed.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/indexes-index-only-scans.html" target="_blank" rel="noopener">PostgreSQL Documentation — Index-Only Scans and Covering Indexes</a> — fetched 2026-06-03</li>
+          <li><a href="https://use-the-index-luke.com/sql/clustering/index-only-scan-covering-index" target="_blank" rel="noopener">Use The Index, Luke — Index-Only Scan / Covering Index</a> — fetched 2026-06-03</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A normal <em>Index Scan</em> does two things. Which one does an <em>Index-Only Scan</em> eliminate, and why does it matter at scale?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">It eliminates descending the B-tree, saving the log(n) traversal.</button>
+            <button class="option" data-correct="true">It eliminates the heap fetch — following each leaf's TID to a scattered row — which at 40,000 matches means 40,000 random heap jumps.</button>
+            <button class="option" data-correct="false">It eliminates sorting the result, because the index is already ordered.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The B-tree descent is cheap (~4 reads); the killer is the heap fetch, because heap rows are scattered in insertion order while leaves are key-sorted, so each match is a random I/O.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">When should you use <code>INCLUDE (col)</code> rather than making <code>col</code> a key column?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">When you also need to filter or sort by <code>col</code>.</button>
+            <button class="option" data-correct="true">When you never filter or sort by <code>col</code> but keep SELECT-ing it — INCLUDE stores it for retrieval without sorting it or copying it into branch nodes.</button>
+            <button class="option" data-correct="false">When <code>col</code> must participate in a UNIQUE constraint.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Key columns are how you find a row; INCLUDE columns are what you carry back. INCLUDE is leaner (leaves only, no sort, no UNIQUE participation) and is the right tool for pure ride-along retrieval.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text"><code>(subsidiary_id) INCLUDE (eur_value)</code> covers <code>SELECT eur_value WHERE subsidiary_id = 5</code>. You add <code>AND sale_date &gt; '2026-01-01'</code>. What happens, and why?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The plan drops from <em>Index Only Scan</em> to <em>Index Scan</em>. The index can still filter on <code>subsidiary_id</code>, but <code>sale_date</code> is neither a key nor an INCLUDE column, so it can't be read from the leaf. Postgres must heap-fetch each candidate row to read <code>sale_date</code> and apply the filter — coverage is broken. Always re-check the plan after changing a query.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why can a perfectly covering index still read the heap in Postgres, what structure decides it, and what kind of table makes index-only scans unreliable?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Because of MVCC: the index stores the value but not row-version visibility, so it can't tell whether its value comes from a version visible to the current transaction. It consults the <strong>visibility map</strong> — a per-page bitmap set by VACUUM marking all-visible pages. If the page is all-visible it returns from the index; otherwise it heap-fetches to check visibility. <strong>Write-hot tables</strong> churn versions, clearing VM bits and forcing constant fallbacks, so index-only scans are unreliable there until VACUUM catches up.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What's the cost of INCLUDE columns, and the rule of thumb for adding them?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Cost: writes get more expensive (changing a payload column forces index maintenance and disqualifies HOT), and wide payloads bloat the index with more pages to scan and cache. Rule of thumb: don't speculatively cover — index first without the SELECT list, and add <code>INCLUDE</code> only when a measured hot query justifies it. Avoid INCLUDE-ing large text/JSON.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: heap fetch vs index-only) ─
+    const steps = [
+      { activate: ['#node-query-a'],
+        explanation: 'Normal Index Scan, step 1: the query WHERE id=42 enters the planner. The index will be used to locate matching rows.' },
+      { activate: ['#node-query-a', '#edge-a0', '#node-btree-a'],
+        explanation: 'Descend the B-tree to the matching leaf entry — cheap, around four reads. But this leaf stores only (id → TID); the email column is not here.' },
+      { activate: ['#node-btree-a', '#edge-a1', '#node-heap-a'],
+        explanation: 'The killer step: follow the TID to the row’s scattered location in the heap to read email. Leaves are key-sorted but heap rows are not, so each match is a random I/O — 40,000 matches = 40,000 random jumps.' },
+      { activate: ['#node-heap-a', '#edge-a2', '#node-result-a'],
+        explanation: 'Only now can the value be returned. Two steps, with the heap fetch dominating cost at scale.' },
+      { activate: ['#node-query-b', '#edge-b0', '#node-btree-b'],
+        explanation: 'Index-Only Scan: the covering index (id) INCLUDE (email) stores email right in the leaf, so descending the B-tree already produces id → TID + email.' },
+      { activate: ['#node-btree-b', '#edge-b1', '#node-vm'],
+        explanation: 'Before trusting the leaf value, Postgres checks the visibility map: is this heap page all-visible? The VM is a tiny bitmap, orders of magnitude smaller than the heap.' },
+      { activate: ['#node-vm', '#edge-b2', '#node-result-b'],
+        explanation: 'Page is all-visible → return the value straight from the index. The heap hop is eliminated (heap skipped ✕). If the VM bit were clear, this would fall back to a heap fetch and the speedup would be lost.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'composite-indexes':   { title: 'Composite Indexes — Column Order & the Leftmost-Prefix Rule', summary: 'The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.' },
+      'btree-indexes':       { title: 'B-tree Indexes — Structure & How Range/Equality Queries Use Them', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, ORDER BY for free, and why f(column) defeats the index.' },
+      'clustered-vs-nonclustered-indexes': { title: 'Clustered vs Non-clustered Indexes', summary: 'Rows-in-the-leaf vs pointer-to-heap; the secondary-index double-lookup, Postgres CLUSTER vs InnoDB permanent PK clustering, and the clustering factor.' },
+      'denormalization':     { title: 'Denormalization — When and Why to Break Normalization Rules', summary: 'Trading write complexity for read speed: counter columns, redundant copies, materialized views, the consistency burden, and the denormalize-only-when framework.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

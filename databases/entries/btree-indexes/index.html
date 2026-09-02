@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>B-tree Indexes — Databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Diagram-local styling (self-contained, theme-aware via currentColor) */
+    .diagram-svg .step-el { opacity: 0.28; transition: opacity 0.35s ease; }
+    .diagram-svg .step-el.active { opacity: 1; }
+    .diagram-svg .node-box { fill: var(--code-bg, #f4f4f5); stroke: var(--border, #c9ccd1); stroke-width: 1.5; }
+    .diagram-svg .node-box.active { stroke: var(--accent, #2563eb); stroke-width: 2.5; }
+    .diagram-svg text { fill: var(--text, #1a1a1a); font-family: ui-monospace, monospace; font-size: 12px; }
+    .diagram-svg .lbl { fill: var(--text-muted, #6b7280); font-family: var(--font, sans-serif); font-size: 11px; }
+    .diagram-svg .edge { stroke: var(--border, #9aa0a6); stroke-width: 1.5; fill: none; }
+    .diagram-svg .edge.active { stroke: var(--accent, #2563eb); stroke-width: 2.5; }
+    .diagram-svg .leaf-chain { stroke: var(--accent, #2563eb); stroke-width: 2; stroke-dasharray: 4 3; fill: none; marker-end: url(#arrow); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">An index is a separate, sorted structure that lets a database find rows by value without scanning the whole table — turning an O(n) "look at every row" into an O(log n) "walk down a shallow tree." The B-tree is the structure that makes this work <em>on disk</em>, for equality and range queries alike, and it is the default index type in every relational database.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">indexes</span>
+        <span class="badge tag">b-tree</span>
+        <span class="badge tag">query-performance</span>
+        <span class="badge tag">range-query</span>
+        <span class="badge tag">disk-io</span>
+        <span class="meta-dates">Created 2026-05-31 · Updated 2026-05-31</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Index</dt>
+        <dd>A separate, sorted data structure that maps a column value to the location of its rows, so the engine can find them without reading the whole table.</dd>
+
+        <dt>Sequential scan (Seq Scan)</dt>
+        <dd>The fallback when no usable index exists: read every row in the heap and test the predicate — O(n) in the table size.</dd>
+
+        <dt>B+ tree</dt>
+        <dd>The on-disk index structure used in production: balanced, sorted, high-fanout, with all entries in the leaves and the leaves chained in a sorted doubly-linked list.</dd>
+
+        <dt>Branch (internal) node</dt>
+        <dd>Pure navigation — each entry holds the max value of the child below plus a pointer down. No row data, just signposts toward the right leaf.</dd>
+
+        <dt>Leaf node &amp; TID</dt>
+        <dd>Holds the actual entries <code>(value → row pointer)</code>. The pointer is a TID/RID — the physical location of the row in the heap. Leaves are linked in sorted order, which is what makes range scans fast.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A table is a <strong>heap</strong> — an unordered pile of rows. With no index, a filter forces a sequential scan across all of them. Creating a B-tree index on the filtered column converts that scan into a handful of page reads through the tree:</p>
+      <pre><code class="lang-sql">-- Without an index: Seq Scan reads all 10M rows
+SELECT * FROM comments WHERE post_id = 42;
+
+CREATE INDEX idx_comments_post_id ON comments(post_id);
+-- Now: ~4–5 page reads via the tree, regardless of table size</code></pre>
+      <p>You can't simply keep the table itself sorted — inserts arrive constantly, and you'd need a different physical order for every column you might filter on. So the database builds a <em>separate</em> sorted structure that points back to the rows. After the index exists, <code>WHERE post_id = 42</code> descends root → branch → leaf, reads the row pointer (TID), and jumps straight to the heap row — about four to five page reads whether the table holds ten thousand rows or ten million.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a <strong>phone book</strong>. To find one name (equality) you flip straight to it. To find a span of names (range) you find the first one, then read forward — the pages are already in order. It's fast on disk because each page holds hundreds of names, so any name is reachable in four or five flips. Keeping it sorted is what costs effort on every insert and delete: the write tax.</p>
+      <p>Walk the trace below to watch an equality lookup of <code>id = 42</code> descend the tree, then see how a range scan reuses the sorted leaf chain instead of re-descending.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 320" aria-label="A B-tree being searched from root to leaf, then a range scan along the linked leaves">
+          <defs>
+            <marker id="arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+              <path d="M0,0 L6,3 L0,6 Z" fill="var(--accent, #2563eb)" />
+            </marker>
+          </defs>
+
+          <!-- Root -->
+          <g id="root" class="step-el">
+            <rect class="node-box" x="250" y="14" width="140" height="34" rx="5" />
+            <text x="270" y="35">[50 | 100]</text>
+          </g>
+          <text class="lbl" x="396" y="34">root</text>
+
+          <!-- Edges root -> branches -->
+          <path id="edge-root-b1" class="edge step-el" d="M300,48 L150,84" />
+          <path id="edge-root-b2" class="edge step-el" d="M340,48 L470,84" />
+
+          <!-- Branch nodes -->
+          <g id="branch-1" class="step-el">
+            <rect class="node-box" x="80" y="86" width="140" height="34" rx="5" />
+            <text x="98" y="107">[20 | 42 | 50]</text>
+          </g>
+          <text class="lbl" x="80" y="80">branch (max ≤ 50)</text>
+
+          <g id="branch-2" class="step-el">
+            <rect class="node-box" x="420" y="86" width="140" height="34" rx="5" />
+            <text x="438" y="107">[70 | 90 | 100]</text>
+          </g>
+
+          <!-- Edge branch1 -> leaf2 (the one holding 42) -->
+          <path id="edge-b1-l2" class="edge step-el" d="M150,120 L250,170" />
+
+          <!-- Leaf nodes (left to right, sorted), chained -->
+          <g id="leaf-1" class="step-el">
+            <rect class="node-box" x="30" y="172" width="120" height="34" rx="5" />
+            <text x="44" y="193">10 · 15 · 20</text>
+          </g>
+          <g id="leaf-2" class="step-el">
+            <rect class="node-box" x="190" y="172" width="120" height="34" rx="5" />
+            <text x="206" y="193">38 · 42 · 50</text>
+          </g>
+          <g id="leaf-3" class="step-el">
+            <rect class="node-box" x="350" y="172" width="120" height="34" rx="5" />
+            <text x="366" y="193">60 · 70 · 90</text>
+          </g>
+          <g id="leaf-4" class="step-el">
+            <rect class="node-box" x="510" y="172" width="120" height="34" rx="5" />
+            <text x="524" y="193">95 · 100 · 120</text>
+          </g>
+          <text class="lbl" x="30" y="166">leaves: (value → TID), sorted</text>
+
+          <!-- Leaf chain arrows (doubly-linked, sorted) -->
+          <path id="chain-1-2" class="leaf-chain step-el" d="M150,189 L186,189" />
+          <path id="chain-2-3" class="leaf-chain step-el" d="M310,189 L346,189" />
+          <path id="chain-3-4" class="leaf-chain step-el" d="M470,189 L506,189" />
+
+          <!-- Heap row jump for the equality hit -->
+          <path id="edge-tid" class="edge step-el" d="M250,206 L250,256" />
+          <g id="heap-row" class="step-el">
+            <rect class="node-box" x="180" y="258" width="200" height="34" rx="5" />
+            <text x="196" y="279">heap row #42 (via TID)</text>
+          </g>
+          <text class="lbl" x="390" y="279">the actual table row</text>
+        </svg>
+
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation"></p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <p><strong>Why a B-tree and not a binary search tree?</strong> Indexes live on disk and are read in fixed pages (8 KB in Postgres). The bottleneck is disk reads, not comparisons — a disk fetch is roughly 10,000× slower than an in-memory compare. A binary tree (2 children per node) is tall and thin, so it costs many fetches; a B-tree packs many keys into each page-sized node, making it wide and shallow. Node count is proportional to disk fetches, so minimizing nodes visited is the entire game.</p>
+        <pre><code class="lang-text">Binary tree (10M rows): depth ~23  → up to 23 disk reads
+B-tree   (10M rows):    depth 4–5  → 4–5 disk reads   (each level ~100× capacity)</code></pre>
+        <p>Three defining properties: <strong>balanced</strong> (all leaves at equal depth, so every lookup costs the same — no slow path), <strong>sorted</strong>, and <strong>multi-way</strong> (high fanout, not just two children). Range scans and <code>ORDER BY ... LIMIT</code> come for free because the leaves are sorted and linked — Postgres's docs even call sorting the B-tree's primary use case.</p>
+
+        <h3>When a B-tree index won't be used</h3>
+        <ul>
+          <li><strong><code>&lt;&gt;</code> / <code>NOT IN</code></strong> — "everything except 42" isn't a contiguous range, so there's nothing to descend to.</li>
+          <li><strong>Leading wildcard</strong> — <code>LIKE 'abc%'</code> works (a known prefix is a range); <code>LIKE '%abc'</code> can't (no known starting point).</li>
+          <li><strong>NULLs</strong> — <code>= NULL</code> is always a logic error; <code>IS NULL</code> can use the index because Postgres stores NULLs separately.</li>
+          <li><strong>Low selectivity</strong> — if a query returns a large fraction of rows (&gt;~5–10%), the planner may prefer a Seq Scan: scattered heap jumps cost more than one linear sweep. Indexes help <em>selective</em> queries.</li>
+          <li><strong>Write tax</strong> — every INSERT/UPDATE/DELETE must maintain every index (add/remove a leaf entry, occasionally split a page). Faster reads paid for at write time — the same trade as denormalization. Don't index columns you never filter or sort by.</li>
+        </ul>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> wrapping the indexed column in a function and expecting the plain index to still be used.
+          <pre><code class="lang-sql">CREATE INDEX idx_users_email ON users(email);
+
+-- Will NOT use idx_users_email — falls back to Seq Scan:
+SELECT * FROM users WHERE lower(email) = 'a@b.com';</code></pre>
+          <p>The subtle part: <code>lower()</code> is applied to the <em>stored column value</em>, not to your search literal. Per row it means "lowercase this row's email, then compare." A row stored as <code>A@b.com</code> evaluates <code>lower('A@b.com') = 'a@b.com'</code> → TRUE, so every casing variant matches. But the plain index is sorted by the <em>raw</em> stored strings (ASCII puts uppercase before lowercase), so those matching variants are scattered across the whole index — there is no single contiguous span to descend to. The planner matches indexes <em>syntactically</em> against the exact predicate expression; it finds an index on <code>email</code>, not on <code>lower(email)</code>, and refuses to evaluate the function across every stored entry on the fly (that would be a full scan, defeating sortedness).</p>
+          <p>The fix is an <strong>expression index</strong> that computes and stores the transformed value at write time:</p>
+          <pre><code class="lang-sql">CREATE INDEX idx_users_lower_email ON users(lower(email));
+-- Now lower(email) = 'a@b.com' descends a tree sorted on lower(email).</code></pre>
+          <p>Rule of thumb: a B-tree is usable only when the query filters by the exact expression the tree is sorted on. <code>WHERE age + 1 = 30</code> won't use an index on <code>age</code>, but <code>WHERE age = 29</code> will — and <code>WHERE email = 'a@b.com'</code> (no <code>lower()</code>) can use a plain index because the predicate dimension matches the sort dimension.</p>
+        </div>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>Extends the single-column B-tree to multiple columns: how sort order and the leftmost-prefix rule decide which queries the index can serve.</span>
+      </a>
+      <a class="related-card" href="../partial-and-expression-indexes/index.html" data-entry="partial-and-expression-indexes">
+        <strong>Partial &amp; Expression Indexes</strong>
+        <span>The fix for the <code>f(column)</code> gotcha here: indexing a transformed value so <code>lower(email) = …</code> becomes a locatable position.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization — When and Why to Break Normalization Rules</strong>
+        <span>The same read-vs-write trade: an index on a foreign key can make a denormalized counter column unnecessary.</span>
+      </a>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>Tables as unordered heaps of tuples — the "pile of rows" an index sits beside to make lookups fast.</span>
+      </a>
+      <a class="related-card" href="../schema-design-normalization/index.html" data-entry="schema-design-normalization">
+        <strong>Schema Design — ER Diagrams &amp; Normalization</strong>
+        <span>Normalized schemas push more work onto joins and filters — exactly the queries that indexes accelerate.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/btree.html" target="_blank" rel="noopener">PostgreSQL Documentation — B-Tree Indexes</a> — fetched 2026-05-31</li>
+          <li><a href="https://en.wikipedia.org/wiki/B-tree" target="_blank" rel="noopener">Wikipedia — B-tree</a> — fetched 2026-05-31</li>
+          <li><a href="https://use-the-index-luke.com/sql/anatomy/the-tree" target="_blank" rel="noopener">Use The Index, Luke — Anatomy of an Index</a> — fetched 2026-05-31</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">Why is a high-fanout B-tree preferred over a binary search tree for an on-disk index?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">A binary tree can't stay sorted, but a B-tree can</button>
+            <button class="option" data-correct="true">The bottleneck is disk fetches; a shallow, wide tree visits far fewer page-sized nodes</button>
+            <button class="option" data-correct="false">B-trees use fewer in-memory comparisons per lookup</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Node count is proportional to disk fetches, and a disk read dwarfs any comparison cost — so packing many keys per page to keep the tree shallow is what matters.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Which leaf-node property lets a B-tree serve <code>BETWEEN</code> and <code>ORDER BY</code> efficiently, while an equality-only structure (like a hash index) cannot?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Leaves store the full row, not just a pointer</button>
+            <button class="option" data-correct="true">Leaves are sorted and chained in a doubly-linked list</button>
+            <button class="option" data-correct="false">Leaves are all at the same depth (balanced)</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">One descent finds the first match, then the sorted linked-list lets the scan walk sideways in order — no re-traversal per row, and no separate sort step.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Which of these queries can use a plain B-tree index on <code>email</code>?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false"><code>WHERE lower(email) = 'a@b.com'</code></button>
+            <button class="option" data-correct="true"><code>WHERE email LIKE 'a%'</code></button>
+            <button class="option" data-correct="false"><code>WHERE email LIKE '%@b.com'</code></button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A known prefix is a contiguous range, so <code>'a%'</code> works. A leading wildcard has no start point, and <code>lower(email)</code> doesn't match the column the tree is sorted on (it needs an expression index).</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">You add 5 indexes to a write-heavy table to speed up reads. What got worse, and which prior topic is this the same trade as?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Write throughput got worse: every INSERT/UPDATE/DELETE must now incrementally maintain all five indexes — inserting or removing a leaf entry and occasionally splitting a page to rebalance. This is the same read-vs-write trade as <strong>denormalization</strong>: you buy faster reads by paying more at write time, so only index columns you actually filter or sort by.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    document.querySelectorAll('td[data-score]').forEach(cell => {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (algorithm trace: B-tree search + range scan) ──
+    const steps = [
+      {
+        activate: ['#root'],
+        explanation: 'Start at the root page. We are searching for id = 42. Scan the keys [50 | 100] for the first separator ≥ 42 — that is 50, so the answer lives in the leftmost child. (Read #1.)'
+      },
+      {
+        activate: ['#root', '#edge-root-b1', '#branch-1'],
+        explanation: 'Follow the pointer down to the branch node [20 | 42 | 50]. Branch nodes hold no row data — just the max value of each child and a pointer down. Scan for the first key ≥ 42. (Read #2.)'
+      },
+      {
+        activate: ['#branch-1', '#edge-b1-l2', '#leaf-2'],
+        explanation: 'Descend to the leaf node 38 · 42 · 50. This is the deepest level: leaves hold the real entries (value → TID). We have descended root → branch → leaf in just a few page reads. (Read #3.)'
+      },
+      {
+        activate: ['#leaf-2', '#edge-tid', '#heap-row'],
+        explanation: 'Find 42 in the leaf, read its row pointer (TID = physical heap location), and jump straight to the table row. ~4–5 page reads total — and this count barely grows whether the table has 10K or 10M rows.'
+      },
+      {
+        activate: ['#leaf-2', '#chain-2-3', '#leaf-3', '#chain-3-4', '#leaf-4'],
+        explanation: 'Now a RANGE query (e.g. id BETWEEN 42 AND 100). We descend once to the first match (42), then walk the sorted leaf chain sideways — leaf-2 → leaf-3 → leaf-4 — reading entries in order until past the upper bound. No re-traversal per row, and ORDER BY comes free from the same sorted chain.'
+      }
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'composite-indexes':              { title: 'Composite Indexes — Column Order & the Leftmost-Prefix Rule', summary: 'The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.' },
+      'partial-and-expression-indexes': { title: 'Partial & Expression Indexes', summary: 'Index a subset of rows (partial) or a transformed value (expression); partial UNIQUE for scoped constraints, case-insensitive uniqueness, and combining both.' },
+      'denormalization':                { title: 'Denormalization — When and Why to Break Normalization Rules', summary: 'Trading write complexity for read speed: counter columns, redundant copies, materialized views, the consistency burden, and the denormalize-only-when framework.' },
+      'relational-data-model':          { title: 'Relational Data Model', summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.' },
+      'schema-design-normalization':    { title: 'Schema Design — ER Diagrams & Normalization (1NF → BCNF)', summary: 'ER modeling (entities/attributes/relationships, cardinality, crow’s foot, weak entities) and normalization 1NF→BCNF via functional dependencies and the three anomalies.' }
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

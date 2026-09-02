@@ -1,0 +1,589 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OSI 7-Layer Model &mdash; networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific: clickable layer rows + misconception callouts */
+    .diagram-svg .layer-row { cursor: pointer; }
+    .diagram-svg .col-head { fill: var(--text-muted); font-family: var(--font); font-size: 10px; letter-spacing: 0.06em; text-transform: uppercase; }
+    .diagram-svg .pdu-text { fill: var(--accent); font-family: var(--mono); font-size: 12px; font-weight: 700; }
+    .diagram-svg .num-text { fill: var(--text-muted); font-family: var(--mono); font-size: 15px; font-weight: 700; }
+    .diagram-svg .step-el.active .num-text { fill: var(--accent); }
+    .diagram-svg .flow-text { fill: var(--text-muted); font-family: var(--font); font-size: 11px; font-style: italic; }
+    .callout {
+      background: var(--warn-soft);
+      border-left: 3px solid var(--warn);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      padding: 0.9rem 1.1rem;
+      margin: 1.5rem 0;
+      font-size: 0.93rem;
+    }
+    .callout > h3 { margin-top: 0; color: var(--text); font-size: 1rem; }
+    .callout table.compare { font-size: 0.86rem; background: var(--surface); }
+    .callout p:last-child { margin-bottom: 0; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">&larr; networks book</a>
+      <a class="back-link global" href="../../../global-index.html">&#8862; All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">&#9689;</button>
+  </header>
+
+  <article class="entry">
+    <h1>OSI 7-Layer Model &mdash; What Each Layer Does and Why the Split Exists</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Networking is split into <strong>seven stacked layers</strong>, each with exactly one responsibility and a clean contract with its neighbours above and below. That split is the whole point: swapping Ethernet for Wi-Fi changes <em>only</em> the bottom two layers, and HTTP, TCP and IP never notice. The <strong>OSI (Open Systems Interconnection) reference model</strong>, standardized by ISO in 1984, lost to TCP/IP as an <em>implementation</em> &mdash; but its <em>vocabulary</em> won outright. Every time an engineer says &ldquo;that&rsquo;s a Layer 2 problem&rdquo; or &ldquo;we need an L7 load balancer,&rdquo; they are speaking OSI.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">osi-model</span>
+        <span class="badge tag">layering</span>
+        <span class="badge tag">switch</span>
+        <span class="badge tag">router</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">layer-3</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="badge tag">mac</span>
+        <span class="badge tag">ip</span>
+        <span class="meta-dates">Created 2026-07-07 &middot; Updated 2026-07-07</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Layer (and the peer-layer contract)</dt>
+        <dd>One slice of the networking job with a single responsibility, a defined interface to the layer directly above and below, and nothing else. Two properties follow. First, a layer talks to its <strong>peer layer</strong> on the remote machine <em>as if</em> the two were connected directly &mdash; the transport layer on your laptop reasons about the transport layer on the server, not about fibre optics. Second, any layer can be <strong>swapped out</strong> without touching the others, which is what lets copper, Wi-Fi, TCP, UDP and HTTP all evolve on independent schedules.</dd>
+
+        <dt>PDU (Protocol Data Unit) &amp; encapsulation</dt>
+        <dd>The name for &ldquo;the thing a given layer hands around,&rdquo; and it is layer-specific: a Transport-layer PDU is a <strong>segment</strong> (TCP) or datagram (UDP), a Network-layer PDU is a <strong>packet</strong>, a Data Link PDU is a <strong>frame</strong>, and the Physical layer deals in <strong>bits</strong>. <strong>Encapsulation</strong> is the act of producing them: your data gets an L4 header (now a segment), then an L3 header (now a packet), then an L2 header and trailer (now a frame), then goes out as bits. Receiving runs the same steps backwards &mdash; <strong>decapsulation</strong>.</dd>
+
+        <dt>MAC address &mdash; the Layer 2, one-hop identity</dt>
+        <dd>A 48-bit hardware address burned into a device&rsquo;s <strong>NIC (Network Interface Card)</strong>, the chip that physically connects a machine to the network. A MAC address is meaningful only <em>within a single local network</em> and answers exactly one question: which device on <em>this</em> wire should receive this frame. It is rewritten at every hop. <strong>ARP (Address Resolution Protocol)</strong> is the lookup that turns a known next-hop IP into its MAC.</dd>
+
+        <dt>IP address &mdash; the Layer 3, end-to-end identity</dt>
+        <dd>A logical address identifying a host anywhere on the internet, which stays <em>unchanged</em> from the original sender to the final destination. Because it is global, IP is what supports <strong>routing</strong>: choosing which network to send toward next. A host compares the destination IP against its own <strong>subnet</strong> (the local network it belongs to) to decide between &ldquo;deliver locally&rdquo; and &ldquo;hand to my <strong>default gateway</strong>,&rdquo; the router that serves as the LAN&rsquo;s exit door.</dd>
+
+        <dt>Switch vs router &mdash; forwarding vs routing</dt>
+        <dd>Two different operations at two different layers, and the single most-confused pair in networking. A <strong>switch</strong> is an L2 device: it moves frames to the right port <em>within one network</em> based on destination MAC, using a <strong>CAM table</strong> (its learned map of MAC&nbsp;&rarr;&nbsp;port). A <strong>router</strong> is an L3 device: it moves packets <em>between</em> networks based on destination IP, consulting a routing table to pick a next hop. Switches forward; routers route.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Layering is easiest to believe when you look at the bytes it produces. A single HTTPS request leaving a laptop is not one object &mdash; it is four nested ones, each wrapped by the layer below in strict order. This is encapsulation made literal:</p>
+
+      <pre><code class="lang-text">bytes on the wire ─────────────────────────────────────────────────────────▶
+
+┌──────────────┬───────────┬────────────┬──────────────────────────┬─────┐
+│ Ethernet hdr │  IP hdr   │  TCP hdr   │ TLS record + HTTP request│ FCS │
+│ src/dst MAC  │ src/dst IP│ src/dst port│  GET /index.html ...    │     │
+└──────────────┴───────────┴────────────┴──────────────────────────┴─────┘
+ └─ L2 FRAME ─────────────────────────────────────────────────────────────┘
+                └─ L3 PACKET ────────────────────────────────────────┘
+                            └─ L4 SEGMENT ───────────────────────────┘
+                                          └─ L7 DATA ────────────────┘</code></pre>
+
+      <p>Read the brackets bottom-up and you have the send path: the application produces data, the transport layer prepends a port header to make a <em>segment</em>, the network layer prepends an IP header to make a <em>packet</em>, and the data link layer wraps the whole thing in a MAC header and trailer to make a <em>frame</em>. The physical layer then emits it as voltage, light or radio. On receipt the destination unwraps in the reverse order. Note that no layer inspects the payload it was handed &mdash; the IP header is written without ever parsing the HTTP request inside it.</p>
+
+      <p>The second thing worth tracing is what each intermediate device actually touches. Take a laptop at <code>192.168.1.10</code> fetching a page from a server at <code>93.184.215.14</code>, across this topology:</p>
+
+      <pre><code class="lang-text">[Laptop] ── [Switch] ── [Router R1] ═══ internet ═══ [Router R2] ── [Server]
+ 192.168.1.10            gateway                                    93.184.215.14
+                       192.168.1.1</code></pre>
+
+      <table class="compare">
+        <thead>
+          <tr><th>#</th><th>Who</th><th>What happens</th><th>Layer</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>1</td><td>Laptop</td>
+            <td>Compares <code>93.184.215.14</code> against its own subnet. Not local &rarr; <em>&ldquo;send toward my default gateway, R1.&rdquo;</em> This is a <strong>routing decision, made by the host</strong>.</td>
+            <td>L3</td>
+          </tr>
+          <tr>
+            <td>2</td><td>Laptop</td>
+            <td>ARPs for R1&rsquo;s MAC, then builds the frame: <code>dstMAC = R1</code>, but <code>dstIP = 93.184.215.14</code>, unchanged.</td>
+            <td>L2 (helper)</td>
+          </tr>
+          <tr>
+            <td>3</td><td>Switch</td>
+            <td>Reads <code>dstMAC = R1</code>, looks it up in the CAM table, forwards out that port. <strong>Never looks at the IP header. Makes no path decision.</strong></td>
+            <td>L2</td>
+          </tr>
+          <tr>
+            <td>4</td><td>Router R1</td>
+            <td>Reads <code>dstIP</code>, consults its routing table, picks next hop R2. Rewrites <code>srcMAC</code>/<code>dstMAC</code> for the new link, decrements TTL. <strong>Both IP addresses untouched.</strong></td>
+            <td>L3</td>
+          </tr>
+          <tr>
+            <td>5</td><td>Router R2</td>
+            <td>Routes by destination IP again, rewrites the MAC pair one last time for the final hop to the server.</td>
+            <td>L3</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <p>One sentence captures the whole table: <strong>the IP addresses are fixed end-to-end; the MAC addresses are rewritten at every router.</strong> That is precisely the L3-vs-L2 distinction &mdash; global and unchanging versus local and per-hop &mdash; and it is the most useful thing the OSI model gives you. A useful thought experiment: delete the switch and routing still works (plug the laptop straight into R1); delete the routers and nothing ever leaves the LAN. Routers are what make it &ldquo;the internet.&rdquo;</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think about posting a letter overseas. You write it, hand it to a courier, who hands it to an airline, which hands it to a plane&rsquo;s crew. Each party only talks to the one next to it and only cares about its own job &mdash; the airline never reads your letter, and you never fly the plane. If the airline swaps a 737 for an A320, your letter is unaffected, because the interface between courier and airline never changed. That division of labour <em>is</em> OSI, and it is why Wi-Fi versus Ethernet is invisible to HTTP.</p>
+
+      <p>The stack below is the whole model in one view. Step through it top-down &mdash; the order a click travels as it leaves your machine &mdash; or click any layer directly. Each row carries the layer&rsquo;s job, its PDU name, the address it uses, and which devices act at that layer.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 720 480" aria-label="The seven OSI layers as a stack, from Application at the top to Physical at the bottom, each showing its job, protocol data unit, address type, and the devices that operate at that layer">
+
+          <text x="12" y="16" class="flow-text">Send &darr; data moves down the stack, each layer adding a header (encapsulation)</text>
+
+          <text x="16" y="36" class="col-head">#</text>
+          <text x="58" y="36" class="col-head">Layer &amp; job</text>
+          <text x="276" y="36" class="col-head">PDU</text>
+          <text x="366" y="36" class="col-head">Address</text>
+          <text x="450" y="36" class="col-head">Examples &amp; who acts here</text>
+
+          <!-- ── L7 Application ── -->
+          <g id="layer-7" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="44" width="700" height="46" />
+            <text x="27" y="73" class="num-text">7</text>
+            <text x="58" y="63" class="node-text">Application</text>
+            <text x="58" y="80" class="label-text">Interface to the app or user &mdash; what you&rsquo;re asking for</text>
+            <text x="276" y="73" class="pdu-text">Data</text>
+            <text x="366" y="73" class="label-text">&mdash;</text>
+            <text x="450" y="67" class="label-text">HTTP, DNS, SMTP, SSH</text>
+            <text x="450" y="81" class="label-text">endpoints only</text>
+          </g>
+
+          <!-- ── L6 Presentation ── -->
+          <g id="layer-6" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="98" width="700" height="46" />
+            <text x="27" y="127" class="num-text">6</text>
+            <text x="58" y="117" class="node-text">Presentation</text>
+            <text x="58" y="134" class="label-text">Format, encrypt, compress, encode</text>
+            <text x="276" y="127" class="pdu-text">Data</text>
+            <text x="366" y="127" class="label-text">&mdash;</text>
+            <text x="450" y="121" class="label-text">TLS, JPEG, UTF-8</text>
+            <text x="450" y="135" class="label-text">endpoints only</text>
+          </g>
+
+          <!-- ── L5 Session ── -->
+          <g id="layer-5" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="152" width="700" height="46" />
+            <text x="27" y="181" class="num-text">5</text>
+            <text x="58" y="171" class="node-text">Session</text>
+            <text x="58" y="188" class="label-text">Open, maintain and tear down a dialogue</text>
+            <text x="276" y="181" class="pdu-text">Data</text>
+            <text x="366" y="181" class="label-text">&mdash;</text>
+            <text x="450" y="175" class="label-text">session management</text>
+            <text x="450" y="189" class="label-text">endpoints only; often folded elsewhere</text>
+          </g>
+
+          <!-- ── L4 Transport ── -->
+          <g id="layer-4" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="206" width="700" height="46" />
+            <text x="27" y="235" class="num-text">4</text>
+            <text x="58" y="225" class="node-text">Transport</text>
+            <text x="58" y="242" class="label-text">End-to-end delivery: ports and reliability</text>
+            <text x="276" y="235" class="pdu-text">Segment</text>
+            <text x="366" y="235" class="label-text">Port</text>
+            <text x="450" y="229" class="label-text">TCP, UDP</text>
+            <text x="450" y="243" class="label-text">endpoints only &mdash; routers never read this</text>
+          </g>
+
+          <!-- ── L3 Network ── -->
+          <g id="layer-3" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="260" width="700" height="46" />
+            <text x="27" y="289" class="num-text">3</text>
+            <text x="58" y="279" class="node-text">Network</text>
+            <text x="58" y="296" class="label-text">Logical addressing &amp; routing across networks</text>
+            <text x="276" y="289" class="pdu-text">Packet</text>
+            <text x="366" y="289" class="label-text">IP</text>
+            <text x="450" y="283" class="label-text">IP, ICMP</text>
+            <text x="450" y="297" class="label-text">ROUTERS act here &mdash; global scope</text>
+          </g>
+
+          <!-- ── L2 Data Link ── -->
+          <g id="layer-2" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="314" width="700" height="46" />
+            <text x="27" y="343" class="num-text">2</text>
+            <text x="58" y="333" class="node-text">Data Link</text>
+            <text x="58" y="350" class="label-text">Delivery across one physical link (one hop)</text>
+            <text x="276" y="343" class="pdu-text">Frame</text>
+            <text x="366" y="343" class="label-text">MAC</text>
+            <text x="450" y="337" class="label-text">Ethernet, Wi-Fi</text>
+            <text x="450" y="351" class="label-text">SWITCHES act here &mdash; local scope</text>
+          </g>
+
+          <!-- ── L1 Physical ── -->
+          <g id="layer-1" class="step-el layer-row">
+            <rect class="node-rect" x="10" y="368" width="700" height="46" />
+            <text x="27" y="397" class="num-text">1</text>
+            <text x="58" y="387" class="node-text">Physical</text>
+            <text x="58" y="404" class="label-text">Raw bits as signals on a medium</text>
+            <text x="276" y="397" class="pdu-text">Bits</text>
+            <text x="366" y="397" class="label-text">&mdash;</text>
+            <text x="450" y="391" class="label-text">copper, fibre, radio, voltages</text>
+            <text x="450" y="405" class="label-text">cables, repeaters, the NIC&rsquo;s radio/PHY</text>
+          </g>
+
+          <text x="12" y="436" class="flow-text">Receive &uarr; data moves up the stack, each layer stripping its header (decapsulation)</text>
+          <text x="12" y="462" class="label-text">Mnemonics &mdash; top-down 7&rarr;1: &ldquo;All People Seem To Need Data Processing&rdquo; &middot; bottom-up 1&rarr;7: &ldquo;Please Do Not Throw Sausage Pizza Away&rdquo;</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">&larr; Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next &rarr;</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">&#8635; Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading&hellip;</p>
+      </div>
+
+      <p>Two beliefs about that L3/L2 boundary trip up almost everyone learning this material. Both are worth correcting explicitly, because getting them backwards makes every later topic &mdash; ARP, VLANs, subnetting, load balancing &mdash; harder than it needs to be.</p>
+
+      <div class="callout">
+        <h3>Misconception 1 &mdash; &ldquo;Switches route, and IP is just something ARP uses for labels&rdquo;</h3>
+        <p><strong>Inverted on both counts. Switches do not route; routers route.</strong> These are two distinct operations:</p>
+        <ul>
+          <li><strong>Routing</strong> (L3, done by routers): deciding, from the <em>destination IP</em>, which network to send toward next &mdash; crossing <em>between</em> networks.</li>
+          <li><strong>Switching / L2 forwarding</strong> (L2, done by switches): moving a frame out the right port <em>within one network</em>, from the <em>destination MAC</em>. No path decision, no network crossing.</li>
+        </ul>
+        <p>A plain switch does not even parse the IP header. It reads the destination MAC, checks its CAM table (&ldquo;that MAC lives on port 5&rdquo;), and forwards. It holds no routing table and has no concept of a &ldquo;next network.&rdquo;</p>
+        <p>And IP is not incidental &mdash; <strong>IP drives every routing decision, and ARP is subordinate to it.</strong> The real order of operations on a host sending to a remote destination is:</p>
+        <ol>
+          <li><strong>The IP decision comes first:</strong> &ldquo;Is the destination on my subnet? No &rarr; send toward my gateway.&rdquo; That is an L3 decision, and the <em>host</em> makes it.</li>
+          <li><strong>ARP is a downstream helper:</strong> &ldquo;The next hop is already decided &mdash; the router at <code>192.168.1.1</code>. Now, what is its MAC?&rdquo; ARP answers only that narrow lookup.</li>
+        </ol>
+        <p>So IP makes the decision and ARP fetches the MAC needed to execute it. ARP exists to <em>serve</em> IP&rsquo;s decision, not the other way round. The one-liner: <strong>routers route using IP between networks; switches forward using MAC within one network; IP is the boss, and MAC and ARP carry out its orders one hop at a time.</strong></p>
+      </div>
+
+      <div class="callout">
+        <h3>Misconception 2 &mdash; &ldquo;A switch is part of the endpoint machines, and only carries traffic to the router&rdquo;</h3>
+        <p><strong>No on both counts.</strong> A switch is a <strong>separate physical device</strong> &mdash; a standalone box with many ports (8, 24, 48). Every device on the local network gets its own cable into it: each laptop, each server, the printer, <em>and</em> the router. The switch is the central junction of one local network.</p>
+        <p>The &ldquo;part of the endpoint&rdquo; intuition comes from confusing the switch with the <strong>NIC</strong>, which really <em>is</em> built into every machine and really does hold that machine&rsquo;s MAC address. The NIC is the endpoint&rsquo;s plug; the switch is the external thing all the plugs connect into. Different objects entirely.</p>
+        <p>Nor is a switch only a device&harr;router shuttle. It handles <strong>all</strong> intra-subnet traffic:</p>
+        <ul>
+          <li><strong>Local &rarr; local (the router is never involved):</strong> laptop &rarr; switch &rarr; printer, both on the same subnet. The router never sees the frame at all.</li>
+          <li><strong>Local &rarr; outside:</strong> laptop &rarr; switch &rarr; router &rarr; internet. Here the switch merely carries the frame to the router the host <em>already chose at L3</em>; the router then does the routing.</li>
+        </ul>
+        <table class="compare">
+          <thead>
+            <tr><th>Role</th><th>What it is</th><th>Job</th><th>Layer</th><th>An endpoint?</th></tr>
+          </thead>
+          <tbody>
+            <tr><td>Endpoint / host</td><td>Laptop, server, phone, printer</td><td>Produces and consumes data; runs the full stack</td><td>L1&ndash;L7</td><td>it <strong>is</strong> the endpoint</td></tr>
+            <tr><td>Switch</td><td>Separate box; the LAN&rsquo;s junction</td><td>Moves frames <em>within</em> one network by MAC</td><td>L2</td><td>no</td></tr>
+            <tr><td>Router</td><td>Separate box; the network&rsquo;s exit door</td><td>Moves packets <em>between</em> networks by IP</td><td>L3</td><td>no</td></tr>
+          </tbody>
+        </table>
+        <p>Endpoints are where data is born and dies, which is why only they run all seven layers. Switches and routers are <em>intermediary infrastructure</em>: they move other machines&rsquo; data &mdash; a switch at L2, a router at L3 &mdash; and neither runs your applications. Think of a mail room: the <strong>endpoints</strong> are employees writing and reading mail; the <strong>switch</strong> is the building&rsquo;s internal mail carrier, walking mail between desks <em>and</em> out to the loading dock &mdash; shared staff, not part of any one employee; the <strong>router</strong> is the loading dock connecting the building to the outside world.</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper &mdash; Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>The reality check: OSI lost, but its vocabulary won</h3>
+        <p>The internet is not actually built on OSI. It runs on the TCP/IP model, which has fewer layers. OSI is a <em>reference</em> model: an idealized seven-layer design that predates and competed with TCP/IP, and lost as an implementation. What survived is the shorthand, and it is genuinely load-bearing in day-to-day engineering:</p>
+        <ul>
+          <li>&ldquo;That&rsquo;s a <strong>Layer 2</strong> issue&rdquo; &mdash; switching, MAC addresses, VLANs.</li>
+          <li>&ldquo;We need a <strong>Layer 3</strong> device&rdquo; &mdash; a router.</li>
+          <li>&ldquo;Put an <strong>L7 load balancer</strong> in front&rdquo; &mdash; it routes on HTTP paths, so it must parse the application protocol. Versus an <strong>L4 load balancer</strong>, which routes on IP and port alone: faster, and deliberately dumber.</li>
+        </ul>
+        <p>The practical rule: learn OSI for the shared language and for its layer-by-layer troubleshooting method (is the cable live? does the frame reach the switch? does the packet reach the gateway? is the port open? does the app respond?). Learn TCP/IP for what is actually deployed.</p>
+
+        <h3>The layers you should nail versus the ones you should merely recognize</h3>
+        <p>Layers 5 and 6 have genuinely fuzzy boundaries in practice, and modern stacks routinely fold session management into the application or the transport layer. Spending study time trying to draw a crisp line between them is wasted effort. Layers 1 through 4 are where the operational reality lives &mdash; nail those hard, and know 5 through 7 by role.</p>
+
+        <h3>Layer 3 switches are not a counterexample</h3>
+        <p>&ldquo;Layer 3 switches,&rdquo; or multilayer switches, do route &mdash; because they have <strong>router functionality built in</strong>. When such a device routes, it is acting as a router at L3; the name describes a box that performs two roles, not a redefinition of what switching means. A pure L2 switch never routes.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> saying &ldquo;Chrome is Layer 7&rdquo; (or &ldquo;my API server is Layer 7&rdquo;).
+          <pre><code class="lang-text">wrong:  Chrome            → Layer 7
+right:  HTTP              → Layer 7   (the protocol)
+        Chrome            → a user of Layer 7 (an application)</code></pre>
+          <p>Why it breaks: the layer is the <em>protocol</em> and its rules, not the program that speaks it. Conflating the two makes the model useless the moment one application speaks several L7 protocols (a browser doing HTTP, DNS and WebSockets at once), or several applications speak the same one. The layer names a contract; software is a client of that contract.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating OSI as literal architecture rather than a thinking tool.
+          <pre><code class="lang-text">the model says:   TLS  →  L6 Presentation (encryption)
+reality:          TLS  runs on top of TCP (L4), and terminates
+                       inside the application process</code></pre>
+          <p>Why it breaks: real protocols smear across OSI boundaries. TLS does encryption, which is L6&rsquo;s job description, but it rides directly on TCP and is negotiated by the application &mdash; it does not slot cleanly into any single layer. Insisting that every protocol has one true layer number leads to unproductive arguments and, worse, to the belief that the model is wrong when it is simply approximate. The seven layers are a map. Maps are useful precisely because they are not the territory.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> getting the direction rule backwards when reasoning about headers.
+          <pre><code class="lang-text">send    (7 → 1):  add headers      = encapsulation
+receive (1 → 7):  strip headers    = decapsulation</code></pre>
+          <p>Why it breaks: the direction determines which header is available to inspect at any given moment. A device that only reaches L2 during decapsulation &mdash; a switch &mdash; has literally not unwrapped far enough to see an IP address. That constraint, not policy or configuration, is why a switch cannot route.</p>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End &mdash; A Packet&rsquo;s Journey</strong>
+        <span>The same seven layers in motion: the full laptop-to-server round trip that the L3-fixed / L2-rewritten insight above is really describing.</span>
+      </a>
+      <a class="related-card" href="../tcp-ip-model/index.html" data-entry="tcp-ip-model">
+        <strong>TCP/IP Model &mdash; How the 4/5-Layer Model Maps to Reality vs OSI</strong>
+        <span>The model the internet is actually built on, and the direct answer to &ldquo;where does TLS really sit?&rdquo; that OSI&rsquo;s L6 fudges.</span>
+      </a>
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation &mdash; Segments &rarr; Packets &rarr; Frames &rarr; Bits</strong>
+        <span>The PDU column of the stack, expanded: which header fields are load-bearing and how a router re-encapsulates at every hop.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet &mdash; Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>What Layer 2 looks like concretely: the 48-bit MAC address structure and the exact frame the switch is reading.</span>
+      </a>
+      <a class="related-card" href="../how-switches-work/index.html" data-entry="how-switches-work">
+        <strong>How Switches Work &mdash; MAC Learning, CAM Table, Forward/Flood/Filter</strong>
+        <span>The mechanics behind &ldquo;switches forward, they don&rsquo;t route&rdquo; &mdash; how the CAM table is built and what happens on a lookup miss.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>ISO/IEC 7498-1 (OSI Reference Model, 1994 revision)</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">Wi-Fi and Ethernet are completely different technologies, yet the same HTTP request works unchanged over both. Which layers differ, and why doesn&rsquo;t the change ripple upward?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Layers 1 through 4 differ; TCP has separate Wi-Fi and Ethernet modes that the application selects.</button>
+            <button class="option" data-correct="true">Only L1 (Physical) and L2 (Data Link) differ &mdash; the medium and the frame format. The clean contract means L3 simply hands a packet down and never learns what carried it.</button>
+            <button class="option" data-correct="false">Only L7 differs; HTTP includes a transport-detection step that adapts to the underlying medium.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The swap is confined to the bottom two layers. IP hands a packet to the data link layer through a fixed interface and gets no visibility into whether a radio or a copper pair carries it &mdash; which is exactly the independence layering was invented to provide.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A router and a switch both forward traffic. What is the fundamental OSI difference between them?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">They do the same job at the same layer; a router is simply a faster switch with more ports.</button>
+            <button class="option" data-correct="false">A switch operates at L3 and uses IP for routing; a router operates at L2 and uses ARP to pick paths.</button>
+            <button class="option" data-correct="true">A switch is L2: it forwards <em>frames</em> within one network by destination MAC. A router is L3: it forwards <em>packets</em> between networks by destination IP, choosing a path.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Different layer, different PDU, different address, different scope. The switch makes no path decision at all &mdash; it never unwraps far enough to see an IP address, so routing is not something it could do even in principle.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">If the internet actually runs on TCP/IP and not on OSI, why is the seven-layer model still worth learning?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>For two reasons, neither of which is historical interest. First, it is the <strong>universal vocabulary</strong>: &ldquo;L2 issue,&rdquo; &ldquo;L3 device,&rdquo; &ldquo;L4 versus L7 load balancer&rdquo; are how engineers actually talk, and that shorthand assumes the OSI numbering. Second, it is a <strong>troubleshooting framework</strong>: walking the stack from the bottom &mdash; is the link up, does the frame reach the switch, does the packet reach the gateway, is the port listening, does the application answer &mdash; converts a vague &ldquo;the network is broken&rdquo; into an ordered sequence of testable questions. OSI lost as an implementation and won as a language; the deployed stack is TCP/IP&rsquo;s smaller set of layers.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (OSI stack, walked top-down) ─────────
+    const steps = [
+      { activate: ['#layer-7'],
+        explanation: 'Layer 7, Application. This is the protocol the app speaks — HTTP, DNS, SMTP — not the app itself. It defines the meaning of the request: what you are asking for. PDU: Data.' },
+      { activate: ['#layer-6'],
+        explanation: 'Layer 6, Presentation. Translates application data to and from a neutral wire format: encryption, compression, encoding (UTF-8, JPEG). This is why an image written on a Mac renders on Windows.' },
+      { activate: ['#layer-5'],
+        explanation: 'Layer 5, Session. Manages the dialogue itself — open it, keep it alive, checkpoint it, close it. The blurriest layer in practice; modern stacks usually fold it into the application or the transport layer.' },
+      { activate: ['#layer-4'],
+        explanation: 'Layer 4, Transport. The end-to-end layer, with two jobs: ports (so one machine can run many conversations at once — the OS uses the port to pick which app receives the data) and reliability (TCP guarantees ordered, complete delivery; UDP does not). The highest layer that lives purely on the two endpoints — routers never touch it. PDU: segment.' },
+      { activate: ['#layer-3'],
+        explanation: 'Layer 3, Network. Logical addressing and routing across networks — where IP addresses and routers live. It gets a packet from any network to any other, hop by hop, choosing a path at each step. Global scope: the IP addresses stay the same the whole way. PDU: packet.' },
+      { activate: ['#layer-2'],
+        explanation: 'Layer 2, Data Link. Delivery across exactly one physical link — one hop. Where MAC addresses and switches live, and where Ethernet and Wi-Fi frames are built. Its only concern is getting this frame to the device at the other end of this wire, so the MAC pair is rewritten at every hop. PDU: frame.' },
+      { activate: ['#layer-1'],
+        explanation: 'Layer 1, Physical. The actual signals: voltage on copper, light in fibre, radio in Wi-Fi. It turns a frame’s ones and zeros into something physical, and back again on the far side. PDU: bits.' },
+      { activate: ['#layer-3', '#layer-2'],
+        explanation: 'The boundary that matters most. L3 is global and unchanging (IP, end-to-end, routers decide the path); L2 is local and rewritten each hop (MAC, one link, switches move frames within a network). Almost every practical networking question resolves to knowing which of these two layers you are standing on.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        currentStep = i;
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => {
+          el.classList.remove('active');
+          const r = el.querySelector('.node-rect');
+          if (r) r.classList.remove('active');
+        });
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => {
+            el.classList.add('active');
+            const r = el.querySelector('.node-rect');
+            if (r) r.classList.add('active');
+          });
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(currentStep - 1); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(currentStep + 1); });
+      resetBtn.addEventListener('click', () => applyStep(0));
+
+      // Clicking a layer row jumps straight to that layer's step
+      document.querySelectorAll('.diagram-svg .layer-row').forEach(row => {
+        const idx = steps.findIndex(s => s.activate.length === 1 && s.activate[0] === '#' + row.id);
+        if (idx === -1) return;
+        row.addEventListener('click', () => applyStep(idx));
+      });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'how-internet-works':          { title: 'How the Internet Works End-to-End — A Packet’s Journey', summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.' },
+      'tcp-ip-model':                { title: 'TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI', summary: 'The real stack the internet runs on: 4- vs 5-layer, the OSI→TCP/IP mapping, where TLS/sockets sit, and the hourglass/narrow-waist model.' },
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+      'ethernet':                    { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'how-switches-work':           { title: 'How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter', summary: 'Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

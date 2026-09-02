@@ -1,0 +1,596 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific diagram rules (SVG only) */
+    .diagram-svg { max-height: 430px; }
+    .diagram-svg .panel      { fill: none; stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .cell       { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .cell.learn { fill: var(--good-soft); stroke: var(--good); stroke-width: 1.5; }
+    .diagram-svg .cell.decide{ fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+    .diagram-svg .mono-text  { font-family: var(--mono); font-size: 11px; fill: var(--text); }
+    .diagram-svg .badge-text { font-size: 12px; font-weight: 700; fill: var(--text); }
+    .diagram-svg .arrow-in   { stroke: var(--accent); stroke-width: 2; fill: none; }
+    .diagram-svg .arrow-flood{ stroke: var(--warn);   stroke-width: 2; fill: none; }
+    .diagram-svg .arrow-fwd  { stroke: var(--good);   stroke-width: 2; fill: none; }
+    .diagram-svg .mk-in      { fill: var(--accent); }
+    .diagram-svg .mk-flood   { fill: var(--warn); }
+    .diagram-svg .mk-fwd     { fill: var(--good); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A switch is a <strong>self-teaching frame forwarder</strong>. Nobody tells it which device sits on which port — it builds that map itself by watching the <strong>source</strong> address of every frame that passes through, and then decides where to send each frame by its <strong>destination</strong> address. Two different header fields, two completely different jobs, on the same frame. Three possible outcomes follow: <strong>forward</strong>, <strong>flood</strong>, or <strong>filter</strong>. And because one of those outcomes applies to every broadcast, a single switch is a single <strong>broadcast domain</strong> — the fact that motivates both VLANs and Spanning Tree.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">switch</span>
+        <span class="badge tag">cam-table</span>
+        <span class="badge tag">mac-address-table</span>
+        <span class="badge tag">mac-learning</span>
+        <span class="badge tag">flooding</span>
+        <span class="badge tag">broadcast-domain</span>
+        <span class="badge tag">collision-domain</span>
+        <span class="badge tag">port-security</span>
+        <span class="badge tag">cam-overflow</span>
+        <span class="meta-dates">Created 2026-07-12 · Updated 2026-07-12</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>CAM table (MAC address table, forwarding table)</dt>
+        <dd>The switch's map from <code>MAC address → physical port</code>, stored in Content Addressable Memory — hardware built for exact-match lookup in a single step. Every forwarding decision is one lookup in this table. It is built entirely from observed traffic, never from configuration.</dd>
+
+        <dt>MAC learning</dt>
+        <dd>The act of reading the <strong>source</strong> MAC address of an arriving frame and recording "this address lives on the port this frame arrived on." Every frame a device transmits teaches the switch that device's location for free — no protocol, no handshake, just observation.</dd>
+
+        <dt>Forward / Flood / Filter</dt>
+        <dd>The three (and only three) outcomes of a lookup on the <strong>destination</strong> MAC. <em>Forward</em>: the address is known and on a different port — send out that one port. <em>Flood</em>: the address is unknown, or the frame is a broadcast/multicast — send out every port except the arrival port. <em>Filter</em>: the address is known and on the <em>same</em> port the frame arrived on — drop it, because sender and receiver already share a segment.</dd>
+
+        <dt>Age timer</dt>
+        <dd>A per-entry countdown (Cisco default ≈300 s) that resets every time that MAC is seen again and deletes the entry when it expires. This is what makes the table dynamic and self-maintaining: silent devices fall out, moved devices get re-learned on their new port.</dd>
+
+        <dt>Broadcast domain vs collision domain</dt>
+        <dd>A <em>collision domain</em> is the set of ports whose transmissions can interfere with each other; on a switch, each port is its own collision domain. A <em>broadcast domain</em> is the set of devices a broadcast frame reaches; on a switch, that is <em>every</em> port. Switching splits collision domains but does nothing to split broadcast domains.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+
+      <p>The table itself is unglamorous — an address, a port, and a clock:</p>
+
+      <pre><code class="lang-text"> ┌───────────────────┬──────┬───────┐
+ │ MAC               │ Port │ Age   │
+ ├───────────────────┼──────┼───────┤
+ │ aa:aa:aa:aa:aa:aa │  1   │ 12 s  │
+ │ bb:bb:bb:bb:bb:bb │  2   │ 45 s  │
+ └───────────────────┴──────┴───────┘</code></pre>
+
+      <p>What makes it interesting is that nothing wrote those rows on purpose. Take three hosts on a switch that was powered on a second ago, with the table completely empty:</p>
+
+      <pre><code class="lang-text">   Host A ── port 1 ┐
+   Host B ── port 2 ┼── [ SWITCH ]
+   Host C ── port 3 ┘</code></pre>
+
+      <p><strong>Frame 1 — A sends to B.</strong> It arrives on port 1 carrying <code>SRC = aa:aa:aa:aa:aa:aa</code> and <code>DST = bb:bb:bb:bb:bb:bb</code>. The switch does two independent things with it:</p>
+
+      <pre><code class="lang-text">LEARN  (source field)  aa:aa:aa:aa:aa:aa  arrived on port 1
+                       → write row:  aa:aa:aa:aa:aa:aa → port 1
+
+DECIDE (dest field)    lookup bb:bb:bb:bb:bb:bb  →  MISS
+                       → FLOOD out ports 2 and 3 (everything but port 1)
+
+Table after frame 1:   aa:aa:aa:aa:aa:aa → port 1</code></pre>
+
+      <p>B receives the flooded copy and processes it because the destination is its own address. C also receives a copy, sees a destination that is not its address, and silently discards it. Note what did <em>not</em> happen: the switch learned nothing whatsoever about B from this frame. A destination address is a question, not evidence.</p>
+
+      <p><strong>Frame 2 — B replies to A.</strong> Same two jobs, mirrored:</p>
+
+      <pre><code class="lang-text">LEARN  (source field)  bb:bb:bb:bb:bb:bb  arrived on port 2
+                       → write row:  bb:bb:bb:bb:bb:bb → port 2
+
+DECIDE (dest field)    lookup aa:aa:aa:aa:aa:aa  →  HIT, port 1
+                       → FORWARD out port 1 only
+
+Table after frame 2:   aa:aa:aa:aa:aa:aa → port 1
+                       bb:bb:bb:bb:bb:bb → port 2</code></pre>
+
+      <p>C is not touched this time. <strong>Frame 3 — A sends to B again</strong> and the destination is now a hit on port 2, so it is forwarded out that single port. Clean unicast, with no configuration ever entered.</p>
+
+      <p>That is the whole pattern, and it generalises: <em>the first frame to an unknown destination floods; the reply teaches the switch; everything afterwards is efficient unicast.</em> Flooding is not a failure mode — it is the designed response to not knowing, and it is self-correcting, because the response it provokes carries the missing information in its source field. On a busy network the table fills within seconds and flooding becomes rare.</p>
+
+      <p>On real hardware the same table is visible directly:</p>
+
+      <pre><code class="lang-text">Switch# show mac address-table
+          Mac Address Table
+-------------------------------------------
+Vlan    Mac Address       Type        Ports
+----    -----------       --------    -----
+   1    aaaa.aaaa.aaaa    DYNAMIC     Fa0/1
+   1    bbbb.bbbb.bbbb    DYNAMIC     Fa0/2</code></pre>
+
+      <p><code>DYNAMIC</code> means the row was learned by observation, exactly as traced above; <code>STATIC</code> rows are pinned by an administrator and never age out. The <code>Vlan</code> column is a preview of the next idea: the table is not really one table but one table <em>per VLAN</em>.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+
+      <p>Think of the switch as a receptionist in a building with numbered doors, who has never been given a staff directory. Every time a memo comes through a door, they glance at who <em>sent</em> it and jot down "this person is behind door 1" — that is the only way the directory ever gets written. Then they look at who the memo is <em>addressed to</em> and check the directory: a match means slide it under that one door; no match means photocopy it and slide it under every other door, because asking everyone is better than dropping it. The two glances are at two different lines of the same memo, and confusing them is the single most common mistake in this topic.</p>
+
+      <p>Step through the trace below and watch the two halves work independently. On the left, the frame arrives and the switch picks one of its three decisions; on the right, the CAM table fills in row by row. At the bottom sits the frame itself, with its source field (green, feeding the table) and its destination field (orange, feeding the decision) highlighted separately — the same frame, two fields, two jobs.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">6</span></div>
+        <svg class="diagram-svg" viewBox="0 0 780 412" aria-label="A three-host switch learning MAC addresses: frames arrive, the switch learns from the source MAC and decides forward, flood or filter from the destination MAC, while the CAM table fills row by row">
+          <defs>
+            <marker id="mk-in" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="mk-in" d="M0,0 L7,3 L0,6 Z" />
+            </marker>
+            <marker id="mk-flood" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="mk-flood" d="M0,0 L7,3 L0,6 Z" />
+            </marker>
+            <marker id="mk-fwd" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path class="mk-fwd" d="M0,0 L7,3 L0,6 Z" />
+            </marker>
+          </defs>
+
+          <!-- ── Hosts ── -->
+          <g id="host-a" class="step-el">
+            <rect x="16" y="70" width="96" height="42" class="node-rect" />
+            <text x="64" y="88" text-anchor="middle" class="node-text">Host A</text>
+            <text x="64" y="103" text-anchor="middle" class="mono-text">aa:…:aa</text>
+          </g>
+          <g id="host-b" class="step-el">
+            <rect x="16" y="150" width="96" height="42" class="node-rect" />
+            <text x="64" y="168" text-anchor="middle" class="node-text">Host B</text>
+            <text x="64" y="183" text-anchor="middle" class="mono-text">bb:…:bb</text>
+          </g>
+          <g id="host-c" class="step-el">
+            <rect x="16" y="230" width="96" height="42" class="node-rect" />
+            <text x="64" y="248" text-anchor="middle" class="node-text">Host C</text>
+            <text x="64" y="263" text-anchor="middle" class="mono-text">cc:…:cc</text>
+          </g>
+
+          <!-- ── Static links + port labels ── -->
+          <line x1="112" y1="91"  x2="246" y2="91"  class="edge-line" />
+          <line x1="112" y1="171" x2="246" y2="171" class="edge-line" />
+          <line x1="112" y1="251" x2="246" y2="251" class="edge-line" />
+          <text x="179" y="87"  text-anchor="middle" class="label-text">port 1</text>
+          <text x="179" y="167" text-anchor="middle" class="label-text">port 2</text>
+          <text x="179" y="247" text-anchor="middle" class="label-text">port 3</text>
+
+          <!-- ── Traffic arrows (inbound above the link, outbound below) ── -->
+          <line id="in-1"  class="step-el arrow-in"    x1="114" y1="75"  x2="242" y2="75"  marker-end="url(#mk-in)" />
+          <line id="in-2"  class="step-el arrow-in"    x1="114" y1="155" x2="242" y2="155" marker-end="url(#mk-in)" />
+          <line id="out-2-flood" class="step-el arrow-flood" x1="242" y1="181" x2="116" y2="181" marker-end="url(#mk-flood)" />
+          <line id="out-3-flood" class="step-el arrow-flood" x1="242" y1="261" x2="116" y2="261" marker-end="url(#mk-flood)" />
+          <line id="out-1-fwd"   class="step-el arrow-fwd"   x1="242" y1="113" x2="116" y2="113" marker-end="url(#mk-fwd)" />
+          <line id="out-2-fwd"   class="step-el arrow-fwd"   x1="242" y1="193" x2="116" y2="193" marker-end="url(#mk-fwd)" />
+
+          <!-- ── The switch and its three decisions ── -->
+          <rect x="246" y="56" width="150" height="258" rx="8" class="panel" />
+          <text x="321" y="76" text-anchor="middle" class="node-text" font-weight="700">SWITCH</text>
+
+          <g id="badge-forward" class="step-el">
+            <rect x="258" y="88" width="126" height="42" class="cell decide" />
+            <text x="321" y="105" text-anchor="middle" class="badge-text">FORWARD</text>
+            <text x="321" y="120" text-anchor="middle" class="label-text">known · other port</text>
+          </g>
+          <g id="badge-flood" class="step-el">
+            <rect x="258" y="140" width="126" height="42" class="cell decide" />
+            <text x="321" y="157" text-anchor="middle" class="badge-text">FLOOD</text>
+            <text x="321" y="172" text-anchor="middle" class="label-text">unknown · broadcast</text>
+          </g>
+          <g id="badge-filter" class="step-el">
+            <rect x="258" y="192" width="126" height="42" class="cell decide" />
+            <text x="321" y="209" text-anchor="middle" class="badge-text">FILTER</text>
+            <text x="321" y="224" text-anchor="middle" class="label-text">known · same port</text>
+          </g>
+
+          <text x="321" y="256" text-anchor="middle" class="label-text">learns from SOURCE</text>
+          <text x="321" y="272" text-anchor="middle" class="label-text">decides by DESTINATION</text>
+
+          <!-- ── CAM table ── -->
+          <text x="430" y="44" class="node-text" font-weight="700">CAM table</text>
+          <text x="510" y="44" class="label-text">MAC → port, learned by watching</text>
+
+          <rect x="430" y="56" width="336" height="28" class="cell" />
+          <text x="440" y="75" class="label-text">MAC</text>
+          <text x="630" y="75" class="label-text">Port</text>
+          <text x="706" y="75" class="label-text">Age</text>
+
+          <g id="row-a" class="step-el">
+            <rect x="430" y="84" width="336" height="34" class="cell learn" />
+            <text x="440" y="105" class="mono-text">aa:aa:aa:aa:aa:aa</text>
+            <text x="630" y="105" class="mono-text">1</text>
+            <text x="706" y="105" class="mono-text">0 s</text>
+          </g>
+          <g id="row-b" class="step-el">
+            <rect x="430" y="118" width="336" height="34" class="cell learn" />
+            <text x="440" y="139" class="mono-text">bb:bb:bb:bb:bb:bb</text>
+            <text x="630" y="139" class="mono-text">2</text>
+            <text x="706" y="139" class="mono-text">0 s</text>
+          </g>
+
+          <g id="cam-empty" class="step-el">
+            <text x="598" y="180" text-anchor="middle" class="label-text">table empty — every destination is a miss</text>
+          </g>
+          <text x="430" y="212" class="label-text">Age resets each time that MAC is seen again;</text>
+          <text x="430" y="228" class="label-text">the row is deleted when it expires (≈300 s).</text>
+
+          <!-- ── The frame on the wire: two fields, two jobs ── -->
+          <text x="16" y="316" class="label-text">the frame on the wire — one frame, two fields, two jobs</text>
+          <rect x="16" y="324" width="750" height="72" rx="8" class="panel" />
+
+          <g id="src-box" class="step-el">
+            <rect x="30" y="336" width="352" height="48" class="cell learn" />
+            <text x="42" y="356" class="mono-text" id="src-mac">SRC = aa:aa:aa:aa:aa:aa  (Host A)</text>
+            <text x="42" y="374" class="label-text">read to LEARN → write this MAC → arrival port</text>
+          </g>
+          <g id="dst-box" class="step-el">
+            <rect x="398" y="336" width="352" height="48" class="cell decide" />
+            <text x="410" y="356" class="mono-text" id="dst-mac">DST = bb:bb:bb:bb:bb:bb  (Host B)</text>
+            <text x="410" y="374" class="label-text">read to DECIDE → look this MAC up in the table</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>Notice that steps 2 and 3 describe the <em>same frame</em>. The switch does not choose between learning and deciding — it always does both, in that order, on every frame it receives. Learning is a side effect that costs nothing and happens even when the decision turns out to be "drop this".</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why this beats the thing it replaced</h3>
+        <p>A <strong>hub</strong> — the Layer 1 device switches displaced — had no table and made no decisions. Every bit arriving on one port was repeated out of every other port, always. That made the entire hub one collision domain: two hosts transmitting at once corrupted each other, and every host saw every other host's traffic. A switch learns MAC addresses and forwards selectively, so each port becomes its own collision domain (and with full-duplex links, collisions stop existing at all), traffic between A and B never reaches C, and the usable aggregate bandwidth multiplies. Hubs are extinct for exactly these reasons.</p>
+
+        <h3>One switch is one broadcast domain</h3>
+        <p>Selective forwarding has a hard limit: it only applies to <em>unicast</em> destinations. A broadcast frame — destination <code>ff:ff:ff:ff:ff:ff</code> — is flooded to every port, always, by definition. A switch never filters a broadcast and there is no table entry that could make it do so.</p>
+        <blockquote><strong>A switch, by default, is a single broadcast domain: every broadcast reaches every device attached to it.</strong></blockquote>
+        <p>ARP requests, DHCP discovery, and every other discovery protocol therefore interrupt every host on the switch. On a small network that is harmless. On a large flat network it wastes bandwidth on every link and CPU on every host. Two later topics exist because of this one sentence: <strong>VLANs</strong> slice a single physical switch into several independent broadcast domains, and <strong>Spanning Tree</strong> exists because a flooded broadcast that meets a loop between redundant switches circulates forever — a <em>broadcast storm</em>, since Ethernet frames carry no hop counter to kill them.</p>
+
+        <h3>Security: CAM table overflow</h3>
+        <p>The CAM table is finite — a fixed number of hardware entries. A <strong>MAC flooding</strong> attack exploits that by transmitting thousands of frames with randomly generated fake <em>source</em> addresses, each one dutifully learned, until the table is full. Once it can no longer learn or store entries, the switch <strong>fails open</strong>: every destination lookup misses, so every frame is flooded out every port, and the switch degrades into a hub. An attacker on any port then sees all traffic. The defence is <strong>port security</strong> — capping how many distinct source MACs a single port is allowed to teach the switch, and shutting the port down or dropping frames beyond that. It is worth sitting with the irony: the mechanism that makes a switch effortless to deploy is the same one that has an exploitable capacity limit.</p>
+
+        <h3>Aging, moves, and re-learning</h3>
+        <p>Entries expire after roughly five minutes of silence. That is not a bug to engineer around — it is what lets a laptop unplugged from port 4 and re-plugged into port 9 work immediately: its first transmitted frame overwrites the stale row with the new port. A device that has been quiet longer than the age timer will trigger one flood the next time somebody addresses it, and then be known again. Occasional flooding for quiet devices is normal, healthy behaviour.</p>
+
+        <h3>Two ways to move the bits</h3>
+        <p><strong>Store-and-forward</strong> reads the entire frame into a buffer, verifies its FCS checksum, and only then forwards it — corrupt frames die at the switch. <strong>Cut-through</strong> starts transmitting as soon as it has read the destination MAC (the first six bytes after the preamble), which cuts latency but forwards damaged frames because the checksum sits at the end and has not arrived yet. Store-and-forward is the default on modern gear; cut-through appears where latency is worth more than error containment.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> believing the switch learns from the destination MAC. This is the single most common error in the topic, and it makes the whole model incoherent.
+          <pre><code class="lang-text">WRONG:  frame arrives on port 1, DST = bb:bb:bb:bb:bb:bb
+        → "so bb:bb:bb:bb:bb:bb must be on port 1"     ✗
+
+RIGHT:  frame arrives on port 1, SRC = aa:aa:aa:aa:aa:aa
+        → "aa:aa:aa:aa:aa:aa is on port 1"             ✓
+        DST = bb:bb:bb:bb:bb:bb → look it up, don't record it</code></pre>
+          <p>Why it breaks: the destination address states where the frame <em>wants to go</em>, which is precisely the thing the switch does not yet know — that is why it is asking the table in the first place. Only the source address is <em>evidence</em>, because the frame demonstrably just came from that device, through that port. Learn from the source; decide by the destination. If you record destinations, the first frame to an unknown host permanently poisons the table with an entry pointing back at the sender's own port, and every reply gets filtered as "same port" — the network silently stops working.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating flooding as a malfunction and trying to suppress it. Flooding is the correct, designed response to an unknown-unicast destination or a broadcast, and it is self-correcting: the recipient's reply carries its own source MAC, which is exactly the row that was missing. A network that never flooded could never bootstrap. Sustained, heavy flooding <em>is</em> worth investigating — it usually means CAM overflow, an asymmetric routing path where replies never traverse the switch, or an aging timer shorter than the traffic's idle gaps — but a burst of flooding on a fresh link is the protocol working.
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> expecting a switch to contain broadcast traffic, or using "switch" and "router" interchangeably. Only a router — or a VLAN boundary, which requires a router to cross — stops a broadcast. A switch operates at Layer 2 on frames and MAC addresses, moving traffic <em>within</em> one network and learning by observation. A router operates at Layer 3 on packets and IP addresses, moving traffic <em>between</em> networks and learning via routing protocols or configuration. Switch = one broadcast domain; router = the boundary between broadcast domains.
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frame Format, MAC Addresses &amp; EtherType</strong>
+        <span>Defines the two fields this entire entry turns on: the source and destination MAC in the frame header, plus what makes an address a broadcast.</span>
+      </a>
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model — What Each Layer Does and Why the Split Exists</strong>
+        <span>Places the switch at Layer 2 and the router at Layer 3 — the framing that makes "switch ≠ router" structural rather than trivia.</span>
+      </a>
+      <a class="related-card" href="../vlans/index.html" data-entry="vlans">
+        <strong>VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging</strong>
+        <span>The direct answer to "one switch is one broadcast domain": VLANs make the CAM table per-VLAN and flooding VLAN-scoped.</span>
+      </a>
+      <a class="related-card" href="../spanning-tree-protocol/index.html" data-entry="spanning-tree-protocol">
+        <strong>Spanning Tree Protocol (STP/RSTP) — Loop Prevention &amp; Root Bridge Election</strong>
+        <span>What happens when flooding meets a redundant loop — a broadcast storm — and the protocol that blocks links to prevent it.</span>
+      </a>
+      <a class="related-card" href="../how-internet-works/index.html" data-entry="how-internet-works">
+        <strong>How the Internet Works End-to-End — A Packet's Journey</strong>
+        <span>Where switch forwarding sits in the full journey: the local-segment hop that happens between every pair of Layer 3 devices.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li>IEEE 802.1D — MAC Bridges</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A frame arrives on port 3 carrying a destination MAC the switch has never seen. What does the switch do with it, and what — if anything — does it record?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">It drops the frame, because it has no entry telling it where to send it, and records nothing.</button>
+            <button class="option" data-correct="true">It floods the frame out every port except port 3, and simultaneously records the frame's <em>source</em> MAC as living on port 3.</button>
+            <button class="option" data-correct="false">It floods the frame out every port including port 3, and records the <em>destination</em> MAC against port 3 so the next frame can be forwarded.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Learning and deciding happen on the same frame but from different fields: the unknown <em>destination</em> forces a flood out all ports except the arrival port, while the <em>source</em> field is unconditionally recorded against port 3. Nothing is ever learned from a destination address.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Hosts A and B have been exchanging traffic for a while, so both are in the CAM table. A now sends a unicast frame to B, and separately sends an ARP broadcast. Which of these does host C receive?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Both — a switch forwards every frame out of every port, it just does so faster than a hub.</button>
+            <button class="option" data-correct="false">Neither — once the CAM table is populated, the switch forwards everything to exactly one port.</button>
+            <button class="option" data-correct="true">Only the ARP broadcast. The unicast is forwarded out B's known port alone; broadcasts are always flooded, because one switch is one broadcast domain.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A known unicast destination produces a forward out a single port, so C never sees it. A broadcast destination bypasses the table entirely and is flooded to every port — no CAM entry can suppress it, which is exactly why a switch cannot segment broadcast traffic and VLANs exist.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">An attacker connects to one port and transmits a continuous stream of frames, each with a different randomly generated source MAC. Trace what happens inside the switch, and explain why the result is a security problem rather than just a performance one.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Each frame is learned, because learning is unconditional and reads the source field — so the fake addresses fill the CAM table entry by entry. The table is finite hardware, so it eventually saturates and the switch can no longer store new entries. From that point every destination lookup misses, and a miss means <strong>flood</strong>: the switch <em>fails open</em> and repeats every frame out every port, degrading into a hub. That is a confidentiality failure, not merely a slow network — the attacker's port now receives copies of traffic between every other pair of hosts and can passively sniff it all. The defence is <strong>port security</strong>: limit the number of distinct source MACs a single port may teach the switch, and drop frames or shut the port down when that limit is exceeded.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at SOME calibration, kept for parity) ───
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal: ALGORITHM TRACE — CAM-table learning ──────────
+    // `set` rewrites the frame's SRC/DST field text, since the same widget
+    // shows a different frame at different points in the trace.
+    const FRAME_AB = {
+      '#src-mac': 'SRC = aa:aa:aa:aa:aa:aa  (Host A)',
+      '#dst-mac': 'DST = bb:bb:bb:bb:bb:bb  (Host B)'
+    };
+    const FRAME_BA = {
+      '#src-mac': 'SRC = bb:bb:bb:bb:bb:bb  (Host B)',
+      '#dst-mac': 'DST = aa:aa:aa:aa:aa:aa  (Host A)'
+    };
+
+    const steps = [
+      {
+        activate: ['#host-a', '#in-1', '#cam-empty', '#src-box', '#dst-box'],
+        set: FRAME_AB,
+        explanation: 'Frame 1. Host A sends to Host B; the frame arrives on port 1. The switch was powered on a moment ago, so the CAM table is empty — no address is known, and every lookup will miss.'
+      },
+      {
+        activate: ['#in-1', '#src-box', '#row-a'],
+        set: FRAME_AB,
+        explanation: 'Job one — LEARN, from the SOURCE field. The frame carries aa:…:aa and it arrived on port 1, so the switch writes the row aa:aa:aa:aa:aa:aa → port 1. This costs nothing and happens on every frame. Note that it learned nothing about B.'
+      },
+      {
+        activate: ['#dst-box', '#badge-flood', '#out-2-flood', '#out-3-flood', '#host-b', '#host-c', '#row-a'],
+        set: FRAME_AB,
+        explanation: 'Job two — DECIDE, from the DESTINATION field, on the very same frame. bb:…:bb is not in the table: an unknown unicast. The switch FLOODS it out every port except the arrival port. B accepts the copy; C sees a destination that is not its own and discards it.'
+      },
+      {
+        activate: ['#host-b', '#in-2', '#src-box', '#row-a', '#row-b'],
+        set: FRAME_BA,
+        explanation: 'Frame 2. B replies to A, arriving on port 2. Learning again reads the SOURCE — bb:…:bb → port 2 — and the second row appears. This is why flooding is self-correcting: the reply it provokes carries exactly the address that was missing.'
+      },
+      {
+        activate: ['#dst-box', '#badge-forward', '#out-1-fwd', '#host-a', '#row-a'],
+        set: FRAME_BA,
+        explanation: 'Deciding on frame 2: destination aa:…:aa is a HIT on port 1, a different port from the one it arrived on, so the switch FORWARDS out port 1 alone. Host C is untouched this time.'
+      },
+      {
+        activate: ['#host-a', '#in-1', '#dst-box', '#badge-forward', '#out-2-fwd', '#host-b', '#row-a', '#row-b'],
+        set: FRAME_AB,
+        explanation: 'Frame 3. A sends to B again — and now bb:…:bb hits on port 2, so this one is FORWARDED, not flooded. One flood bootstrapped the conversation; everything after it is clean unicast. Only the third decision, FILTER, is unused here: it applies when the destination is known on the same port the frame arrived on, so the two devices already share a segment and the switch simply drops the frame.'
+      }
+    ];
+
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (steps[i].set) Object.entries(steps[i].set).forEach(([sel, txt]) => {
+          const el = document.querySelector(sel);
+          if (el) el.textContent = txt;
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'ethernet': {
+        title: 'Ethernet — Frame Format, MAC Addresses & EtherType',
+        summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.'
+      },
+      'osi-model': {
+        title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists',
+        summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.'
+      },
+      'vlans': {
+        title: 'VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging',
+        summary: 'Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.'
+      },
+      'spanning-tree-protocol': {
+        title: 'Spanning Tree Protocol (STP/RSTP) — Loop Prevention & Root Bridge Election',
+        summary: 'Why L2 loops are fatal (no TTL → broadcast storm) and how STP blocks them: root-bridge election, root/designated/blocking ports, path cost, and RSTP’s fast convergence.'
+      },
+      'how-internet-works': {
+        title: 'How the Internet Works End-to-End — A Packet’s Journey',
+        summary: 'A packet’s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.'
+      }
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

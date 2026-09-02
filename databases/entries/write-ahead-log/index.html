@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Write-Ahead Log (WAL) — Crash Recovery &amp; the Durability Guarantee</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Before any change touches a data page, Postgres first appends a description of it to an <strong>append-only, sequentially-written log</strong> and flushes <em>that</em> to disk. The data pages may lag indefinitely — after any crash, replaying the log reconstructs every change that never reached them. <strong>Log first, data later</strong>; everything else is a consequence.</p>
+      <blockquote style="border-left:3px solid var(--accent); background:var(--accent-soft); color:var(--text); margin:1rem 0; padding:0.75rem 1rem; border-radius:0 var(--radius) var(--radius) 0; font-style:italic;">
+        “Changes to data files must be written only after those changes have been logged, that is, after WAL records describing the changes have been flushed to permanent storage.”
+        <span style="display:block; font-style:normal; font-size:0.8rem; color:var(--text-muted); margin-top:0.4rem;">— PostgreSQL documentation, the write-ahead rule</span>
+      </blockquote>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">wal</span>
+        <span class="badge tag">durability</span>
+        <span class="badge tag">crash-recovery</span>
+        <span class="badge tag">lsn</span>
+        <span class="badge tag">pd_lsn</span>
+        <span class="badge tag">checkpoint</span>
+        <span class="badge tag">full-page-write</span>
+        <span class="badge tag">synchronous-commit</span>
+        <span class="badge tag">wal-level</span>
+        <span class="meta-dates">Created 2026-06-30 · Updated 2026-06-30</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Write-ahead rule</dt>
+        <dd>The single invariant the whole system rests on: a change may be written to a data file only <em>after</em> the WAL record describing it has been flushed to permanent storage. The log always reaches disk before the data pages it describes.</dd>
+
+        <dt>LSN (Log Sequence Number)</dt>
+        <dd>A WAL record's byte position in the logical WAL stream. LSNs only ever increase, giving every change a total order. <code>pg_current_wal_lsn()</code> reports the current write position.</dd>
+
+        <dt><code>pd_lsn</code> (page LSN)</dt>
+        <dd>A field in every data page's header holding the LSN of the <em>last WAL record that modified that page</em>. Pairing a record's LSN against a page's <code>pd_lsn</code> is what drives — and idempotently bounds — recovery replay.</dd>
+
+        <dt>Checkpoint / redo point</dt>
+        <dd>A checkpoint flushes all currently-dirty data pages to disk and writes a checkpoint record; its <strong>redo point</strong> is the WAL position at checkpoint start. Everything logged before the redo point is guaranteed to be in the data files, so recovery begins there and older WAL can be recycled.</dd>
+
+        <dt>Full-page write (backup block)</dt>
+        <dd>The first modification of a page after each checkpoint writes the <em>whole page image</em> into the WAL. During recovery these images are applied unconditionally — the torn-page defense, since a partially-written page's <code>pd_lsn</code> is untrustworthy.</dd>
+
+        <dt><code>synchronous_commit</code></dt>
+        <dd>The durability/latency dial. <code>on</code> (default) makes COMMIT wait for the WAL <code>fsync</code> → zero committed-data loss. <code>off</code> returns before the flush → faster, but a crash may lose the last fraction of a second of commits. It never corrupts.</dd>
+
+        <dt><code>wal_level</code></dt>
+        <dd>How much the WAL records. <code>minimal</code> = crash recovery only; <code>replica</code> (default) adds archiving, streaming replication, and PITR; <code>logical</code> adds row-level logical decoding.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The heart of WAL is the recovery loop. On an unclean startup — detected via <code>pg_control</code> — Postgres finds the redo point and replays the WAL forward, deciding record-by-record whether each change already reached its page. The decision is a single comparison of the record's LSN against the page's <code>pd_lsn</code>:</p>
+      <pre><code class="lang-text">-- Unclean startup: pg_control shows the last shutdown was not clean.
+redo_lsn = checkpoint.redo          -- replay begins here
+
+for each WAL record R, in LSN order, starting at redo_lsn:
+    page = target_page(R)
+
+    if R.is_full_page_image:         -- first touch of page after a checkpoint
+        overwrite page with the image     -- UNCONDITIONAL — torn-page defense
+        page.pd_lsn = R.lsn
+
+    else if R.lsn &gt; page.pd_lsn:     -- change had NOT reached the page
+        apply R to page
+        page.pd_lsn = R.lsn
+
+    else:                            -- R.lsn &lt;= page.pd_lsn
+        skip R                       -- already applied; do nothing</code></pre>
+      <p>The <code>R.lsn &gt; page.pd_lsn</code> test is the whole trick. If the page already carries an LSN at least as high as the record's, the change is already reflected there, so replaying it would be redundant — it is skipped. That makes replay <strong>idempotent</strong>: it is safe to crash <em>during</em> recovery and simply run the whole loop again.</p>
+      <p>Full-page-write records are the exception — they are pasted over the page <em>regardless</em> of <code>pd_lsn</code>. A page torn mid-write (8 KB spans two disk sectors) has an untrustworthy header, so comparing against its <code>pd_lsn</code> would be unsafe; stamping a whole known-good image is idempotent by construction. This is why WAL volume spikes right after each checkpoint, and why more frequent checkpoints inflate total WAL.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture WAL as a <strong>notary's append-only journal</strong> sitting in front of the ledger. Before a clerk edits the ledger (a data page), they write the intended change in the journal and wait for the ink to dry (<code>fsync</code>) — only then tell the customer "done" (the commit ack). Ledger pages update lazily. If the office burns down (a crash), you fetch the surviving ledger, find the last "books balanced &amp; photographed" stamp (the redo point), and replay every journal entry after it — checking each page's "last-updated" mark (<code>pd_lsn</code>) to skip changes already reflected. Writing the journal is one fast sequential motion; editing ledger pages is slow flipping all over the book — so the bank commits thousands per second by making the customer wait only on the journal, and never loses a confirmed transaction.</p>
+      <p>Step through the WAL lifecycle below: the change lands in the log, the commit hardens it to disk <em>before</em> the data pages, a checkpoint catches the pages up and stamps a redo point, a crash strikes, and recovery replays the log forward.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 660 380" aria-label="Time sequence of the write-ahead log lifecycle: a change is appended to the WAL, fsynced to disk at commit before the data pages, a checkpoint flushes dirty pages and writes a redo point, a crash occurs, and recovery replays the WAL forward applying each record only if its LSN exceeds the page pd_lsn">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="330" y="22" text-anchor="middle" class="label-text" font-weight="700" font-size="13">WAL lifecycle — log first, data later, replay after crash</text>
+
+          <!-- ── Persistent: WAL on-disk track ── -->
+          <text x="44" y="92" class="label-text">WAL on disk — pg_wal (append-only, sequential)</text>
+          <rect x="40" y="98" width="580" height="42" rx="8" class="node-rect" />
+          <line x1="120" y1="100" x2="120" y2="138" stroke="var(--border)" stroke-width="1" />
+          <line x1="200" y1="100" x2="200" y2="138" stroke="var(--border)" stroke-width="1" />
+          <line x1="280" y1="100" x2="280" y2="138" stroke="var(--border)" stroke-width="1" />
+          <line x1="360" y1="100" x2="360" y2="138" stroke="var(--border)" stroke-width="1" />
+          <line x1="440" y1="100" x2="440" y2="138" stroke="var(--border)" stroke-width="1" />
+          <line x1="520" y1="100" x2="520" y2="138" stroke="var(--border)" stroke-width="1" />
+          <text x="600" y="123" text-anchor="end" class="label-text">LSN →</text>
+
+          <!-- ── Persistent: data files on disk ── -->
+          <text x="525" y="246" text-anchor="middle" class="label-text">Data files (8 KB pages, disk)</text>
+          <rect x="430" y="252" width="190" height="60" rx="8" class="node-rect" />
+          <text x="525" y="284" text-anchor="middle" class="node-text" font-size="12">heap + index pages</text>
+          <text x="525" y="301" text-anchor="middle" class="label-text">pages lag behind WAL</text>
+
+          <!-- ── Persistent: time axis ── -->
+          <line x1="40" y1="352" x2="612" y2="352" class="edge-line" marker-end="url(#arrow)" />
+          <text x="606" y="345" text-anchor="end" class="label-text">time →</text>
+
+          <!-- ── Step 1: append to WAL buffer ── -->
+          <g id="s1" class="step-el">
+            <rect x="40" y="40" width="220" height="42" rx="8" class="node-rect" />
+            <text x="150" y="60" text-anchor="middle" class="node-text">WAL buffer (RAM)</text>
+            <text x="150" y="75" text-anchor="middle" class="label-text">append LSN 150 — describes the change</text>
+            <line x1="150" y1="82" x2="150" y2="96" class="edge-line" marker-end="url(#arrow)" />
+          </g>
+
+          <!-- ── Step 2: commit → fsync WAL to disk, before data pages ── -->
+          <g id="s2" class="step-el">
+            <circle cx="360" cy="61" r="11" fill="#22c55e" />
+            <path d="M354,61 l4,4 l7,-8" fill="none" stroke="#ffffff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+            <text x="378" y="57" class="node-text" fill="#22c55e">COMMIT ack — durable</text>
+            <text x="378" y="73" class="label-text">fsync WAL to disk, before any data page</text>
+            <line x1="360" y1="82" x2="360" y2="96" class="edge-line" marker-end="url(#arrow)" />
+          </g>
+
+          <!-- ── Step 3: checkpoint flushes dirty pages + writes redo point ── -->
+          <g id="s3" class="step-el">
+            <line x1="230" y1="90" x2="230" y2="148" stroke="#f59e0b" stroke-width="2" />
+            <path d="M230,90 l14,5 l-14,5 z" fill="#f59e0b" />
+            <text x="230" y="162" text-anchor="middle" class="label-text" fill="#f59e0b" font-weight="700">redo point</text>
+            <line x1="470" y1="140" x2="500" y2="250" class="edge-line" marker-end="url(#arrow)" />
+            <text x="515" y="196" class="label-text">checkpoint:</text>
+            <text x="515" y="210" class="label-text">flush dirty pages</text>
+          </g>
+
+          <!-- ── Step 4: crash ── -->
+          <g id="s4" class="step-el">
+            <text x="388" y="182" text-anchor="middle" class="node-text" fill="#ef4444" font-weight="700" font-size="16">CRASH</text>
+            <path d="M388,188 l-10,22 l8,0 l-6,20 l18,-26 l-8,0 l6,-16 z" fill="#ef4444" />
+            <text x="388" y="244" text-anchor="middle" class="label-text">data pages behind the WAL head</text>
+          </g>
+
+          <!-- ── Step 5: recovery replays WAL forward from redo point ── -->
+          <g id="s5" class="step-el">
+            <line x1="230" y1="150" x2="602" y2="150" class="edge-line" marker-end="url(#arrow)" />
+            <text x="416" y="146" text-anchor="middle" class="label-text">replay WAL forward from redo point →</text>
+            <rect x="40" y="168" width="300" height="74" rx="8" class="node-rect" />
+            <text x="54" y="188" class="node-text" font-size="12">for each record after redo point:</text>
+            <text x="54" y="209" class="label-text" fill="#22c55e">LSN &gt; page.pd_lsn  →  APPLY, set pd_lsn</text>
+            <text x="54" y="227" class="label-text">LSN ≤ page.pd_lsn  →  SKIP (already there)</text>
+            <line x1="340" y1="220" x2="428" y2="272" class="edge-line" marker-end="url(#arrow)" />
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Redo-only: there is no undo log</h3>
+        <p>Postgres WAL is <strong>redo-only</strong>. Unlike systems with an undo log, atomicity's "undo" is not the log's job — it is delegated to MVCC and the commit log (clog). A <code>ROLLBACK</code> does not physically reverse anything: it simply flips the transaction to <code>ABORTED</code> in the clog. MVCC visibility then makes that transaction's tuples invisible to everyone <em>instantly</em>; the dead tuples are reaped later by <code>VACUUM</code>. Postgres flips the cost model — rollback is cheap, and you pay later in VACUUM — whereas an undo-log system makes rollback the expensive path (restoring before-images).</p>
+
+        <h3>Why commit-<code>fsync</code> and checkpoint-<code>fsync</code> are different jobs</h3>
+        <p>Both a commit and a checkpoint call <code>fsync</code>, but on different things and for different reasons. A commit fsyncs the <em>WAL</em> (one sequential file) to make the transaction durable. A checkpoint fsyncs the <em>dirty data pages</em> (scattered across heap and indexes) to bound recovery time and free old WAL. This is exactly why logging-first makes commits <em>faster</em>: at commit you harden one sequential file, not the many random pages a transaction touched — and group commit lets one WAL <code>fsync</code> harden many concurrent transactions' commit records at once.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> "<code>synchronous_commit=off</code> risks database corruption, so never use it."
+          <pre><code class="lang-sql">SET synchronous_commit = off;   -- high-volume ingestion
+-- ... transactions return before their WAL is fsync'd ...
+-- crash before the flush lands
+</code></pre>
+          <p>The misconception is "risk of loss" collapsing into "risk of corruption." Async commit only moves the <em>durability boundary</em> into the past: you may lose the last fraction of a second of committed transactions — a consistent <em>suffix</em> — but never a partial or corrupt one. Recovery still replays WAL in strict LSN order and rolls back incomplete transactions, so every recovered transaction is whole; and async never relaxes the write-ahead <em>ordering</em>, so a data page can never outrun its WAL. Lost suffix, never corruption. (Contrast <code>fsync=off</code> or <code>full_page_writes=off</code> on non-atomic storage, which genuinely <em>can</em> corrupt.)</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming more frequent checkpoints are "safer" for free.
+          <pre><code class="lang-text">checkpoint_timeout = 30s   -- aggressively frequent
+</code></pre>
+          <p>Every checkpoint resets the full-page-write clock: the <em>first</em> modification of each page afterward dumps a whole 8 KB image into the WAL. Checkpointing more often means more first-touches, so WAL volume balloons and steady-state I/O rises — for a shorter recovery you did not necessarily need. The real levers (<code>checkpoint_timeout</code>, <code>max_wal_size</code>, <code>checkpoint_completion_target</code>) trade recovery speed and WAL retention against steady-state write amplification; tune them together, not blindly downward.</p>
+        </div>
+
+        <h3>Beyond crash recovery — PITR &amp; replication</h3>
+        <p>The same log doubles as a change feed. <strong>PITR:</strong> archive each completed 16 MB segment (<code>archive_command</code>); a base backup plus WAL replay restores to <em>any point in time</em> ("three seconds before the bad DELETE"). <strong>Replication:</strong> a standby streams and replays the primary's WAL to stay in near-real-time sync; <code>wal_level=logical</code> adds row-level logical decoding. One consequence to watch: replication slots and a failing <code>archive_command</code> <em>pin</em> WAL in <code>pg_wal</code>, so it stops recycling and the directory grows without bound.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../acid-properties/index.html" data-entry="acid-properties">
+        <strong>ACID Properties</strong>
+        <span>The <em>why</em> behind WAL: redo powers Durability and the commit <code>fsync</code> happens before the ack. This entry is the <em>how</em>.</span>
+      </a>
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>Where <code>pd_lsn</code> lives in the page header, and the torn-page hazard that full-page writes defend against.</span>
+      </a>
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC — How Postgres Implements Multi-Version Concurrency Control</strong>
+        <span>Why WAL is redo-only: <code>ROLLBACK</code> is a clog flip made instant by MVCC visibility, not a log reversal — MVCC does the undo WAL doesn't.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>Where the write-ahead rule is enforced: a dirty buffer can't be evicted until its WAL is flushed; checkpoints flush dirty buffers from the pool.</span>
+      </a>
+      <a class="related-card" href="../table-bloat-and-autovacuum/index.html" data-entry="table-bloat-and-autovacuum">
+        <strong>Table Bloat &amp; Autovacuum — Reclaiming What MVCC Leaves Behind</strong>
+        <span>Replication slots and failed archiving pin WAL in <code>pg_wal</code>; slots also pin <code>xmin</code>, feeding the bloat this entry cleans up.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>The same MVCC snapshot machinery; recovery's consistent-prefix guarantee echoes snapshot consistency at a point in time.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/wal-intro.html" target="_blank" rel="noopener">PostgreSQL Documentation — Reliability and the Write-Ahead Log</a> — fetched 2026-06-30</li>
+          <li><a href="https://www.postgresql.org/docs/current/wal-configuration.html" target="_blank" rel="noopener">PostgreSQL Documentation — WAL Configuration</a> — fetched 2026-06-30</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql09/01.html" target="_blank" rel="noopener">The Internals of PostgreSQL §9.1 — WAL / LSN</a> — fetched 2026-06-30</li>
+          <li><a href="https://www.interdb.jp/pg/pgsql09/08.html" target="_blank" rel="noopener">The Internals of PostgreSQL §9.8 — Database Recovery</a> — fetched 2026-06-30</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">You write the change <em>twice</em> (once to the WAL, once to the data page) yet commits get <em>faster</em>, not slower. Why?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The WAL write is skipped entirely when the system is under load.</button>
+            <button class="option" data-correct="true">At commit only the WAL is <code>fsync</code>'d — one sequential sync — instead of the many scattered data pages; those flush lazily, and group commit hardens many transactions in one sync.</button>
+            <button class="option" data-correct="false">Data pages are written to the same sequential file as the WAL, so both flushes are cheap.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">One sequential WAL <code>fsync</code> beats N random data-page syncs; dirty pages are deferred to checkpoints/bgwriter, and group commit amortizes one flush across many concurrent commits.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A teammate wants <code>synchronous_commit=off</code> for high-volume ingestion but fears it can corrupt the database on a crash. What is the correct risk assessment?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Correct to fear it — async commit can leave half-applied transactions, so the database may need manual repair.</button>
+            <button class="option" data-correct="true">You may lose the last fraction of a second of committed transactions (a consistent suffix), but never corruption — async only delays the commit flush, it never relaxes write-ahead ordering.</button>
+            <button class="option" data-correct="false">There is no risk at all; <code>off</code> is identical to <code>on</code> once recovery finishes.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Recovery replays WAL in LSN order and rolls back incomplete transactions, so every recovered transaction is whole. The durability boundary just moves into the past — lost suffix, never a partial or corrupt transaction.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">During recovery, why does Postgres apply a WAL record only if its LSN <code>&gt;</code> the page's <code>pd_lsn</code> — and why are full-page-write records applied <em>differently</em>?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The comparison makes replay <strong>idempotent</strong>: if the page already carries an LSN at least as high as the record's, the change is already reflected, so it is skipped — meaning you can crash mid-recovery and safely rerun the whole loop. Full-page-write records (written on the first touch of each page after a checkpoint) are applied <em>unconditionally</em>, overwriting the page regardless of <code>pd_lsn</code>. A page torn mid-write has an untrustworthy header, so comparing against its <code>pd_lsn</code> would be unsafe; stamping a whole known-good image is idempotent by construction and defends against torn pages.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (TIME SEQUENCE: WAL lifecycle) ────────
+    const steps = [
+      { activate: ['#s1'],
+        explanation: 'Step 1 — The transaction modifies a data page in memory and, first, appends a record describing that change to the in-memory WAL buffer. Each record gets an LSN: its byte position in the ever-growing log.' },
+      { activate: ['#s1', '#s2'],
+        explanation: 'Step 2 — At COMMIT, Postgres fsyncs the WAL up to this record to permanent storage and only then acknowledges the commit. Crucially the WAL reaches disk before any of the scattered data pages — the write-ahead rule, and the reason the commit is durable.' },
+      { activate: ['#s1', '#s2', '#s3'],
+        explanation: 'Step 3 — Later, a checkpoint flushes all currently-dirty data pages to disk and stamps a redo point in the WAL. Everything logged before the redo point is now guaranteed to be in the data files, so recovery can start there and older WAL segments can be recycled.' },
+      { activate: ['#s3', '#s4'],
+        explanation: 'Step 4 — Power is lost. The WAL on disk is intact and durable, but the data files still lag: some committed changes logged after the redo point never made it into their pages.' },
+      { activate: ['#s3', '#s5'],
+        explanation: 'Step 5 — On restart, recovery replays the WAL forward from the redo point. For each record it compares the record LSN to the target page pd_lsn — applying only if the record is newer (LSN > pd_lsn), skipping otherwise. That makes replay idempotent. Full-page-write records are applied unconditionally, since a torn page pd_lsn cannot be trusted.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'acid-properties':            { title: 'ACID Properties', summary: 'The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the app’s job, isolation as a tunable dial, and the wedding-ceremony model.' },
+      'heap-storage-layout':        { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.' },
+      'mvcc':                       { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'buffer-pool':                { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+      'table-bloat-and-autovacuum': { title: 'Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind', summary: 'Dead tuples → bloat; plain VACUUM (reusable, FSM) vs VACUUM FULL/pg_repack (shrink), the VM’s two bits, freezing & XID wraparound, and autovacuum triggers/tuning.' },
+      'isolation-levels':           { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

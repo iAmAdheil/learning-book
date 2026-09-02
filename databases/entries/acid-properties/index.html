@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ACID Properties — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>ACID Properties</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text"><strong>ACID</strong> is the set of four guarantees a <em>transaction</em> — a bundle of operations treated as one logical unit — upholds so that concurrency and crashes can never leave data half-finished or corrupt: <strong>A</strong>tomicity, <strong>C</strong>onsistency, <strong>I</strong>solation, <strong>D</strong>urability. The framing most people miss is that the four letters are not peers: A, I, and D are machinery the <em>database</em> provides, while C is mostly the <em>application's</em> job.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">acid</span>
+        <span class="badge tag">atomicity</span>
+        <span class="badge tag">consistency</span>
+        <span class="badge tag">isolation</span>
+        <span class="badge tag">durability</span>
+        <span class="badge tag">wal</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">savepoint</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-06-10 · Updated 2026-06-15</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Transaction</dt>
+        <dd>A bundle of operations treated as one logical unit, bracketed by <code>BEGIN</code> and <code>COMMIT</code> (or <code>ROLLBACK</code>). It is the <em>unit</em> over which all four ACID guarantees are defined — not the individual statement.</dd>
+
+        <dt>Atomicity</dt>
+        <dd>All-or-nothing: if any statement in a transaction fails to complete, the whole transaction fails and the database is left unchanged. From other transactions' point of view it either happens completely or not at all.</dd>
+
+        <dt>Write-Ahead Log (WAL)</dt>
+        <dd>A durable append-only log that records intended changes <em>before</em> they touch the data pages. One log powers two directions: <strong>undo</strong> (reverse uncommitted work) for Atomicity, and <strong>redo</strong> (replay committed work) for Durability.</dd>
+
+        <dt>Consistency</dt>
+        <dd>A transaction moves the database from one valid state to another, preserving every <em>declared</em> invariant — <code>CHECK</code>, <code>NOT NULL</code>, <code>FOREIGN KEY</code>, <code>UNIQUE</code>, triggers. The database only enforces the rules it was given; everything else is the application's responsibility.</dd>
+
+        <dt>Isolation</dt>
+        <dd>Concurrent transactions leave the database in a state equivalent to having run sequentially (the gold standard, <em>serializability</em>). In practice it is a tunable dial — a spectrum of levels that trade anomaly prevention for speed.</dd>
+
+        <dt>Durability</dt>
+        <dd>Once a transaction is committed it stays committed, surviving system failure. The durability line is the <code>COMMIT</code> acknowledgment: before it, no promise; after it, ironclad.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>The canonical transaction is a bank transfer — two writes that must behave as one. Either both happen or neither does; a balance can never be debited without the matching credit:</p>
+      <pre><code class="lang-sql">BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE name = 'Alice';
+UPDATE accounts SET balance = balance + 100 WHERE name = 'Bob';
+COMMIT;</code></pre>
+      <p>Wrap these two statements in <code>BEGIN…COMMIT</code> and you are buying Atomicity: if the process dies after the debit but before the credit, the engine uses the WAL to <strong>undo</strong> the uncommitted debit on restart, and no money vanishes. Every ORM transaction block — <code>db.transaction(...)</code>, <code>@Transactional</code> — is purchasing exactly this guarantee.</p>
+
+      <p><strong>Savepoints</strong> add partial rollback: a nested checkpoint inside a transaction, so you can undo part of it without abandoning the whole:</p>
+      <pre><code class="lang-sql">BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE name = 'Alice';
+SAVEPOINT sp;
+UPDATE accounts SET balance = balance + 100 WHERE name = 'Bob';
+ROLLBACK TO sp;     -- undo only Bob's line; Alice's debit still pending
+UPDATE accounts SET balance = balance + 100 WHERE name = 'Wally';
+COMMIT;</code></pre>
+      <p>After <code>ROLLBACK TO sp</code>, Bob's credit is discarded but Alice's debit survives inside the still-open transaction; the money instead lands with Wally at <code>COMMIT</code>. The transaction is the boundary; the savepoint is a finer-grained checkpoint within it.</p>
+
+      <p>The subtle trap lives in Consistency. Suppose a bug debits Alice but never credits Bob:</p>
+      <pre><code class="lang-sql">BEGIN;
+UPDATE accounts SET balance = balance - 100 WHERE name = 'Alice';
+-- bug: the credit line is missing
+COMMIT;</code></pre>
+      <p>This commits with no error, and the database is still perfectly "consistent." Money vanished, but no <em>declared</em> constraint was broken — "money is conserved" was an invariant that was never expressed as a <code>CHECK</code> or trigger, so the database had nothing to enforce. The database did not fail at C; C was simply never handed to it.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a transaction as a <strong>wedding ceremony</strong>. Atomicity is "I now pronounce you married" — all-or-nothing, nobody ends up half-married. Consistency is the officiant checking the legal rules <em>on the books</em> (consent, age, valid license) — he refuses an illegal marriage but won't stop one you'll regret, because he only enforces the rules he was handed. Isolation is two weddings in adjacent halls that never bleed into each other. Durability is the signed certificate filed at the registry: official forever, surviving even if the venue burns down that night — and the <em>filing</em> is the commit.</p>
+      <p>The engine that delivers both Atomicity and Durability is a single Write-Ahead Log — one log, two directions. Step through a transaction's lifecycle below and watch where the durability line falls (the <code>COMMIT</code> fsync) and how the same log is replayed forward (redo) or backward (undo) after a crash.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 400" aria-label="Lifecycle of a transaction showing how the write-ahead log delivers both atomicity (undo) and durability (redo)">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Top row: the forward path ── -->
+          <text x="20" y="28" class="diagram-label" font-weight="700">A transaction's life: WAL before data pages</text>
+
+          <g id="node-begin" class="step-el">
+            <rect x="20" y="42" width="100" height="48" rx="8" class="diag-box" />
+            <text x="70" y="64" text-anchor="middle" class="diagram-label">BEGIN</text>
+            <text x="70" y="80" text-anchor="middle" class="diagram-sub">start txn</text>
+          </g>
+          <line id="edge-0" class="step-el diag-edge" x1="120" y1="66" x2="185" y2="66" marker-end="url(#arrow)" />
+
+          <g id="node-wal" class="step-el">
+            <rect x="190" y="42" width="130" height="48" rx="8" class="diag-box" />
+            <text x="255" y="64" text-anchor="middle" class="diagram-label">Write to WAL</text>
+            <text x="255" y="80" text-anchor="middle" class="diagram-sub">intent logged first</text>
+          </g>
+          <line id="edge-1" class="step-el diag-edge" x1="320" y1="66" x2="385" y2="66" marker-end="url(#arrow)" />
+
+          <g id="node-commit" class="step-el">
+            <rect x="390" y="42" width="150" height="48" rx="8" class="diag-box diag-box-result" />
+            <text x="465" y="64" text-anchor="middle" class="diagram-label">COMMIT</text>
+            <text x="465" y="80" text-anchor="middle" class="diagram-sub">fsync WAL → ack</text>
+          </g>
+
+          <!-- durability line annotation -->
+          <line id="edge-dur" class="step-el diag-edge diag-edge-warn" x1="465" y1="90" x2="465" y2="120" marker-end="url(#arrow)" />
+          <g id="node-durline" class="step-el">
+            <rect x="370" y="124" width="190" height="40" rx="8" class="diag-box diag-box-warn" />
+            <text x="465" y="148" text-anchor="middle" class="diagram-sub diag-warn-text">⟵ DURABILITY LINE: ack only after fsync</text>
+          </g>
+
+          <!-- lazy data page flush -->
+          <line id="edge-2" class="step-el diag-edge" x1="255" y1="90" x2="255" y2="200" marker-end="url(#arrow)" />
+          <text x="305" y="150" text-anchor="middle" class="diagram-sub">flushed lazily, later</text>
+          <g id="node-heap" class="step-el">
+            <rect x="190" y="205" width="130" height="48" rx="8" class="diag-box" />
+            <text x="255" y="227" text-anchor="middle" class="diagram-label">Data pages (heap)</text>
+            <text x="255" y="243" text-anchor="middle" class="diagram-sub">may lag behind WAL</text>
+          </g>
+
+          <!-- divider -->
+          <line x1="20" y1="285" x2="620" y2="285" class="diag-divider" stroke-dasharray="4 4" />
+
+          <!-- ── Bottom row: recovery, one log two directions ── -->
+          <text x="20" y="312" class="diagram-label" font-weight="700">On crash, recovery replays the one log two ways</text>
+
+          <g id="node-crash" class="step-el">
+            <rect x="20" y="326" width="100" height="48" rx="8" class="diag-box diag-box-warn" />
+            <text x="70" y="348" text-anchor="middle" class="diagram-label">⚡ Crash</text>
+            <text x="70" y="364" text-anchor="middle" class="diagram-sub">restart</text>
+          </g>
+
+          <line id="edge-undo" class="step-el diag-edge diag-edge-warn" x1="120" y1="342" x2="300" y2="342" marker-end="url(#arrow)" />
+          <g id="node-undo" class="step-el">
+            <rect x="305" y="318" width="150" height="40" rx="8" class="diag-box diag-box-warn" />
+            <text x="380" y="335" text-anchor="middle" class="diagram-label">UNDO (Atomicity)</text>
+            <text x="380" y="350" text-anchor="middle" class="diagram-sub">reverse uncommitted</text>
+          </g>
+
+          <line id="edge-redo" class="step-el diag-edge" x1="120" y1="360" x2="300" y2="372" marker-end="url(#arrow)" />
+          <g id="node-redo" class="step-el">
+            <rect x="305" y="362" width="150" height="40" rx="8" class="diag-box diag-box-result" />
+            <text x="380" y="379" text-anchor="middle" class="diagram-label">REDO (Durability)</text>
+            <text x="380" y="394" text-anchor="middle" class="diagram-sub">replay committed gap</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why "C" is the odd one out</h3>
+        <p>A, I, and D are mechanisms the database implements. Consistency is different: the database only checks the homework it was handed. It rejects and rolls back any transaction that violates a <em>declared</em> rule — a <code>CHECK</code>, <code>NOT NULL</code>, <code>FOREIGN KEY</code>, <code>UNIQUE</code>, or trigger — but it has no notion of business invariants it was never told about. This is why researchers (Hellerstein and others) argue C "doesn't really belong" in ACID: A, I, D are guarantees the engine provides unconditionally, whereas C is the engine validating the constraints the application declared. Consistency is only ever as strong as the invariants you write down.</p>
+
+        <h3>One log, two directions — the WAL insight</h3>
+        <p>The same Write-Ahead Log delivers both Atomicity and Durability, which is why it is the single most important mechanism to understand. Because intentions are logged <em>before</em> the data pages change, the engine always knows what to reverse and what to replay:</p>
+        <pre><code class="lang-text">ATOMICITY  →  undo direction  →  reverse UNCOMMITTED changes on rollback/crash
+DURABILITY →  redo direction  →  replay COMMITTED changes not yet in the heap</code></pre>
+        <p>The redo target is precise: it is the <em>gap between the WAL and the heap</em> — committed changes that were fsync'd to the log but had not yet been lazily flushed to the data files — not "the whole database." That gap exists because durability means <em>survives a crash</em>, not <em>written into the table</em>. Right after commit a row may live only in the WAL on disk and not yet in the heap, and that is entirely fine: the log is durable. What is "not yet on disk" is the heap copy — never the log.</p>
+
+        <h3>Isolation is a dial, not a switch</h3>
+        <p>Equating isolation with "no dirty reads" is wrong; that is just the lowest bar. Isolation means behaving as if transactions ran serially (serializability), and it is offered as a spectrum of levels (Read Uncommitted → Serializable) where weaker levels deliberately allow some anomalies in exchange for speed. Two implementation families exist: pessimistic locking / two-phase locking (lock touched data, others wait), and optimistic MVCC (multiple row versions, each transaction sees the version valid at its start, so readers don't block writers). Postgres uses MVCC, and it diverges from the ANSI standard — request "Read Uncommitted" and you get Read Committed, because MVCC makes dirty reads impossible, and its Serializable uses Serializable Snapshot Isolation (SSI), not locking. That same MVCC is why an index-only scan sometimes still touches the heap: version-visibility metadata (<code>xmin</code>/<code>xmax</code>) lives on the heap tuple, not the index entry.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> doing two related writes <em>without</em> wrapping them in a transaction, on the assumption that "the second one always runs."
+          <pre><code class="lang-sql">-- NO transaction: two independent statements
+UPDATE accounts SET balance = balance - 100 WHERE name = 'Alice';
+-- ← request crashes / process dies HERE
+UPDATE accounts SET balance = balance + 100 WHERE name = 'Bob';</code></pre>
+          <p>Why it breaks: without <code>BEGIN…COMMIT</code> each statement commits on its own, so there is no Atomicity across the pair. If the request dies between them, Alice's debit is already durable and Bob's credit never happens — money is destroyed and an orphaned, half-finished state is left behind. The fix is to make the two writes one transaction so the WAL can undo the debit if the credit never commits.</p>
+        </div>
+
+        <h3>Durability has limits</h3>
+        <p>Durability is only as strong as storage honoring <code>fsync</code>. Setting <code>fsync=off</code>, or a lying disk controller that acknowledges writes still sitting in volatile cache, silently breaks the guarantee — the engine believes the WAL is on disk when it is not, and a crash loses "committed" work. And single-node durability is not the same as surviving disk destruction: that requires replication to another machine.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>The full treatment of the "I" — the anomaly×level table, MVCC snapshot timing, and Postgres-vs-ANSI divergence that this entry only sketches.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The pessimistic implementation family for isolation: growing/shrinking phases and lock-point serializability.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Where the same MVCC that powers isolation forces the visibility-map check — version metadata lives on the heap, not the index.</span>
+      </a>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>The keys and constraints you declare here are exactly the invariants Consistency enforces — and the only ones it can.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization — When and Why to Break Normalization Rules</strong>
+        <span>Redundant copies multiply the invariants the application must keep consistent — the consistency burden ACID's "C" will not carry for you.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://en.wikipedia.org/wiki/ACID" target="_blank" rel="noopener">Wikipedia — ACID</a> — fetched 2026-06-10</li>
+          <li><a href="https://www.postgresql.org/docs/current/tutorial-transactions.html" target="_blank" rel="noopener">PostgreSQL Documentation — Transactions (tutorial)</a> — fetched 2026-06-10</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A transfer debits Alice $100 but a bug skips crediting Bob; it commits with no error. Which ACID property is at stake, and why is the answer surprising?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Atomicity — only one of the two writes happened, so the transaction wasn't all-or-nothing.</button>
+            <button class="option" data-correct="false">Durability — the missing credit means the commit wasn't truly persisted.</button>
+            <button class="option" data-correct="true">Consistency — but surprisingly the database is still "consistent," because no <em>declared</em> constraint was broken; "money conserved" was never given to it.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The single buggy statement that did run was atomic and durable. The logical invariant "money is conserved" was never declared as a constraint, so the DB had nothing to enforce — C is only as strong as the rules you write down, which is why it's the application's job.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In Postgres, "Read Uncommitted" behaves like Read Committed and dirty reads are impossible. Why?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Postgres locks every row on read, so uncommitted data can never be seen.</button>
+            <button class="option" data-correct="true">MVCC gives each transaction a snapshot of versions valid at its start, so there is no "uncommitted version" to read in the first place.</button>
+            <button class="option" data-correct="false">Postgres silently rejects any request for an isolation level weaker than Serializable.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Under MVCC, readers see row versions valid as of their snapshot and never an in-flight write, so dirty reads can't occur. Postgres maps the standard's Read Uncommitted up to Read Committed, and implements Serializable via SSI rather than locking.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Explain how the single WAL mechanism delivers both Atomicity and Durability — name the direction (undo/redo) for each.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Because intentions are logged <em>before</em> the data pages change, one log serves both. <strong>Atomicity = undo (backward):</strong> on rollback or crash, the engine reverses uncommitted changes using the log. <strong>Durability = redo (forward):</strong> at commit the WAL is fsync'd to disk before the ack, and on restart the engine replays committed changes that hadn't yet reached the data files. The redo target is specifically the gap between the WAL and the heap — committed-but-not-yet-flushed work — not the whole database.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Correct this claim: "Postgres durability means that after COMMIT my row is safely written into the table's data file."</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Durability means the change <em>survives a crash</em>, not that it is in the table. Right after commit the row may live only in the WAL on disk; the heap copy is flushed lazily and may lag. The correct statement is: the change is safe once the WAL records are fsync'd to disk, and that fsync happens <em>at commit, before the acknowledgment</em> — the commit boundary is the durability line. Nothing durable is "not on disk": it's the heap copy that may lag, never the log.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In Postgres, where does Isolation come from, and why does that same mechanism explain why an index-only scan sometimes still touches the heap?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Isolation comes from MVCC: each transaction sees the row versions valid at its start, so readers don't block writers. But version-visibility metadata (<code>xmin</code>/<code>xmax</code>) lives on the heap tuple, not the index entry, so a pure index-only scan "has no idea whether the row is committed/visible to me." The visibility map lets Postgres trust the index entry when a page is marked all-visible; otherwise it must fall back to the heap to check visibility — the same MVCC bookkeeping that powers isolation.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: WAL → atomicity + durability) ─
+    const steps = [
+      { activate: ['#node-begin'],
+        explanation: 'BEGIN opens the transaction. Nothing is promised yet — until COMMIT, every change is provisional and reversible.' },
+      { activate: ['#node-begin', '#edge-0', '#node-wal'],
+        explanation: 'Before any change touches the data pages, the intended change is appended to the Write-Ahead Log. This "log first" ordering is what makes both undo and redo possible — the engine has recorded its intentions.' },
+      { activate: ['#node-wal', '#edge-1', '#node-commit'],
+        explanation: 'At COMMIT, the engine fsyncs the WAL records to physical disk and only THEN acknowledges success to the client.' },
+      { activate: ['#node-commit', '#edge-dur', '#node-durline'],
+        explanation: 'This is the durability line: the COMMIT acknowledgment is returned only after the WAL is on disk. Before the ack, no promise; after it, the change survives a crash — even though it may live only in the log so far.' },
+      { activate: ['#node-wal', '#edge-2', '#node-heap'],
+        explanation: 'The actual data pages (the heap) are flushed lazily, later. Right after commit a row can exist only in the durable WAL and not yet in the heap — that is fine. What is "not yet on disk" is the heap copy, never the log.' },
+      { activate: ['#node-crash', '#edge-undo', '#node-undo'],
+        explanation: 'Crash recovery, direction one — UNDO (Atomicity): the engine reads the log backward and reverses any uncommitted changes, so a half-finished transaction leaves no trace.' },
+      { activate: ['#node-crash', '#edge-redo', '#node-redo'],
+        explanation: 'Crash recovery, direction two — REDO (Durability): the engine replays committed changes that were in the WAL but had not yet reached the heap. The redo target is exactly that WAL-to-heap gap — one log, two directions.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'isolation-levels':   { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'two-phase-locking':  { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants, and Postgres\'s MVCC+strict-2PL hybrid.' },
+      'covering-indexes':   { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres\'s visibility map / MVCC can still force heap access.' },
+      'relational-data-model': { title: 'Relational Data Model', summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.' },
+      'denormalization':    { title: 'Denormalization — When and Why to Break Normalization Rules', summary: 'Trading write complexity for read speed: counter columns, redundant copies, materialized views, the consistency burden, and the denormalize-only-when framework.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

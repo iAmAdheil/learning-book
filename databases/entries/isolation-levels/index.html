@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Isolation Levels &amp; Read Anomalies — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Isolation Levels &amp; Read Anomalies</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">An <strong>isolation level</strong> is the dial that trades correctness-under-concurrency for speed. Raising it eliminates more <strong>anomalies</strong> — the ways concurrent transactions corrupt each other's view of the data — but at higher cost: more locks, more aborts-and-retries, less throughput. The four ANSI levels are defined <em>entirely</em> by which anomalies they forbid, so the whole topic collapses into a single table. This is the <strong>I</strong> in ACID, made tunable.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">isolation-levels</span>
+        <span class="badge tag">dirty-read</span>
+        <span class="badge tag">non-repeatable-read</span>
+        <span class="badge tag">phantom-read</span>
+        <span class="badge tag">write-skew</span>
+        <span class="badge tag">serialization-anomaly</span>
+        <span class="badge tag">mvcc</span>
+        <span class="badge tag">snapshot-isolation</span>
+        <span class="badge tag">ssi</span>
+        <span class="badge tag">predicate-locks</span>
+        <span class="meta-dates">Created 2026-06-10 · Updated 2026-06-15</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Isolation level</dt>
+        <dd>A per-transaction setting that determines which concurrency anomalies are forbidden. Each level is defined not by <em>how</em> it works but by <em>which</em> anomalies it guarantees cannot happen — making the four standard levels a strict staircase from weakest to strongest.</dd>
+
+        <dt>Dirty read</dt>
+        <dd>Reading data written by a concurrent transaction that has <strong>not yet committed</strong>. If that writer later rolls back, the reader saw a value that never truly existed.</dd>
+
+        <dt>Non-repeatable read</dt>
+        <dd>Re-reading <em>the same row</em> inside one transaction and getting a different value, because another transaction <strong>committed</strong> an UPDATE/DELETE to that row in between. The data is real, but one question got two answers.</dd>
+
+        <dt>Phantom read</dt>
+        <dd>Re-running <em>the same range query</em> and getting a different <strong>set</strong> of rows, because another committed transaction INSERTed or DELETEd rows matching the predicate. The WHERE-clause population changed, not an individual row you already held.</dd>
+
+        <dt>Snapshot Isolation (MVCC snapshot)</dt>
+        <dd>An implementation where each transaction reads from a consistent point-in-time snapshot of committed data. <em>When</em> that snapshot is taken — fresh per statement vs. frozen for the whole transaction — is exactly what distinguishes Read Committed from Repeatable Read.</dd>
+
+        <dt>Serialization anomaly (write skew)</dt>
+        <dd>An outcome that no serial (one-at-a-time) ordering of the transactions could ever produce. Write skew is the classic case: two transactions read an overlapping set, each makes a locally-valid decision, and the combination breaks an invariant — even though they write <strong>different</strong> rows.</dd>
+
+        <dt>SSI / predicate locks</dt>
+        <dd>Serializable Snapshot Isolation: Snapshot Isolation plus runtime detection of serialization anomalies. It uses <strong>predicate locks</strong> (non-blocking) to track <em>what each transaction read</em>, then aborts a transaction at commit (SQLSTATE <code>40001</code>) if the interleaving could not have been serial.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>All three classic read anomalies share one shape: a reader sees something wrong because a concurrent writer is in flight. The difference is <em>what</em> goes wrong.</p>
+
+      <p><strong>Dirty read</strong> — reading uncommitted data. The reader sees a value the writer might still throw away:</p>
+      <pre><code class="lang-sql">T1: UPDATE accounts SET balance = 0 WHERE id = 1;   -- not committed
+T2: SELECT balance FROM accounts WHERE id = 1;       -- reads 0  ← DIRTY
+T1: ROLLBACK;                                        -- that 0 never existed</code></pre>
+
+      <p><strong>Non-repeatable read</strong> — the same row changes value if re-read. Here the other transaction <em>committed</em>, so the data is genuine; the problem is that one transaction got two answers to one question:</p>
+      <pre><code class="lang-sql">T1: SELECT balance FROM accounts WHERE id = 1;       -- reads 100
+T2: UPDATE accounts SET balance = 50 WHERE id = 1; COMMIT;
+T1: SELECT balance FROM accounts WHERE id = 1;       -- reads 50  ← NON-REPEATABLE</code></pre>
+
+      <p><strong>Phantom read</strong> — the same range query returns a different <em>set</em> of rows, because a concurrent transaction INSERTed (or DELETEd) rows matching the predicate:</p>
+      <pre><code class="lang-sql">T1: SELECT count(*) FROM accounts WHERE balance &gt; 100;   -- returns 3
+T2: INSERT INTO accounts (balance) VALUES (500); COMMIT;
+T1: SELECT count(*) FROM accounts WHERE balance &gt; 100;   -- returns 4  ← PHANTOM</code></pre>
+
+      <p>The precise distinction matters because the two require different defenses. A non-repeatable read is an <em>existing row you already read</em> changing (UPDATE/DELETE of a specific row); locking rows you've read is cheap <strong>row-level locking</strong>. A phantom is the <em>set membership</em> changing (INSERT/DELETE); preventing it needs <strong>predicate / range / gap locking</strong> — you must lock a <em>condition</em>, because you cannot lock a row that does not exist yet.</p>
+
+      <p>The fourth, subtlest anomaly is the <strong>serialization anomaly</strong>, of which write skew is the textbook example. Two transactions read an overlapping set, each acts safely on its own snapshot, both commit, and the combination breaks an invariant neither broke alone:</p>
+      <pre><code class="lang-sql">-- Invariant: COUNT(on_call) &gt;= 1.   Alice &amp; Bob both on call.
+T1 (Alice): SELECT count(*) FROM doctors WHERE on_call;  -- sees 2, "safe to leave"
+T2 (Bob):   SELECT count(*) FROM doctors WHERE on_call;  -- sees 2, "safe to leave"
+T1: UPDATE doctors SET on_call = false WHERE name = 'Alice'; COMMIT;
+T2: UPDATE doctors SET on_call = false WHERE name = 'Bob';   COMMIT;
+-- Zero doctors on call. Each transaction was individually fine.</code></pre>
+      <p>Crucially the two transactions write <em>different</em> rows, so simple write-write conflict detection misses it entirely. No dirty, non-repeatable, or phantom read occurred — yet the result corresponds to no serial ordering.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a photographer handling a moving crowd. <strong>Read Uncommitted</strong> watches the live scene — people half-out-of-frame, some who will walk away (rolled back). <strong>Read Committed</strong> takes a <em>new photo per shot</em>: each is of settled people, but two photos seconds apart differ. <strong>Repeatable Read</strong> takes <em>one photo at the start</em> and works from that print — people never move or multiply, but the real room changed, so filing a change from a stale print may be rejected. <strong>Serializable</strong> uses that single photo <em>plus a referee</em> who checks, after everyone files, whether all the edits could have happened in <em>some</em> sequential order; if two people assumed incompatible worlds, one filing is torn up.</p>
+
+      <p>The whole topic is one table: anomalies across the top, levels down the side, and each level forbids one more column than the last. The heatmap below shows it twice over — green where an anomaly is <strong>prevented</strong>, red where it is <strong>allowed</strong> — with annotations where Postgres is <em>stronger</em> than the ANSI standard requires (the standard is a floor, not an exact spec).</p>
+
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Level</th>
+            <th>Dirty read</th>
+            <th>Non-repeatable read</th>
+            <th>Phantom read</th>
+            <th>Serialization anomaly</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Read Uncommitted</td>
+            <td data-score="25">allowed <em>(but not in PG — acts like Read Committed)</em></td>
+            <td data-score="25">allowed</td>
+            <td data-score="25">allowed</td>
+            <td data-score="25">allowed</td>
+          </tr>
+          <tr>
+            <td>Read Committed</td>
+            <td data-score="90">prevented</td>
+            <td data-score="25">allowed</td>
+            <td data-score="25">allowed</td>
+            <td data-score="25">allowed</td>
+          </tr>
+          <tr>
+            <td>Repeatable Read</td>
+            <td data-score="90">prevented</td>
+            <td data-score="90">prevented</td>
+            <td data-score="90">allowed by ANSI, <em>but prevented in PG</em></td>
+            <td data-score="25">allowed</td>
+          </tr>
+          <tr>
+            <td>Serializable</td>
+            <td data-score="90">prevented</td>
+            <td data-score="90">prevented</td>
+            <td data-score="90">prevented</td>
+            <td data-score="90">prevented</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>Two reads of the same table: the ANSI standard stops at the first three columns (the staircase), while Postgres adds the fourth — the serialization anomaly — and exceeds the spec by also killing phantoms at Repeatable Read. Postgres also has no real Read Uncommitted: there is no machinery that could ever show uncommitted data, so that row collapses into Read Committed.</p>
+
+      <p>Underneath the table, the mechanical difference between the two most-used levels is purely <em>when the MVCC snapshot is taken</em>. Step through two SELECTs issued inside one transaction, once under Read Committed and once under Repeatable Read, and watch a concurrent commit slip through one but not the other.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 360" aria-label="MVCC snapshot timing under Read Committed (fresh snapshot per statement) versus Repeatable Read (one frozen snapshot), with a concurrent commit in between two reads">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Top path: Read Committed ── -->
+          <text x="20" y="30" class="diagram-label" font-weight="700">Read Committed — fresh snapshot per statement</text>
+
+          <g id="node-rc-s1" class="step-el">
+            <rect x="20" y="45" width="130" height="50" rx="8" class="diag-box" />
+            <text x="85" y="68" text-anchor="middle" class="diagram-label">SELECT #1</text>
+            <text x="85" y="84" text-anchor="middle" class="diagram-sub">snapshot A → 100</text>
+          </g>
+          <line id="edge-rc-0" class="step-el diag-edge diag-edge-warn" x1="150" y1="70" x2="245" y2="70" marker-end="url(#arrow)" />
+
+          <g id="node-rc-commit" class="step-el">
+            <rect x="250" y="45" width="140" height="50" rx="8" class="diag-box diag-box-warn" />
+            <text x="320" y="66" text-anchor="middle" class="diagram-label">Concurrent T2</text>
+            <text x="320" y="84" text-anchor="middle" class="diagram-sub">UPDATE→50; COMMIT</text>
+          </g>
+          <line id="edge-rc-1" class="step-el diag-edge" x1="390" y1="70" x2="465" y2="70" marker-end="url(#arrow)" />
+
+          <g id="node-rc-s2" class="step-el">
+            <rect x="470" y="45" width="150" height="50" rx="8" class="diag-box diag-box-warn" />
+            <text x="545" y="66" text-anchor="middle" class="diagram-label">SELECT #2</text>
+            <text x="545" y="84" text-anchor="middle" class="diagram-sub">snapshot B → 50 ⚠</text>
+          </g>
+          <text x="545" y="120" text-anchor="middle" class="diagram-sub diag-warn-text">non-repeatable read</text>
+
+          <!-- divider -->
+          <line x1="20" y1="200" x2="620" y2="200" class="diag-divider" stroke-dasharray="4 4" />
+
+          <!-- ── Bottom path: Repeatable Read ── -->
+          <text x="20" y="235" class="diagram-label" font-weight="700">Repeatable Read — one frozen snapshot</text>
+
+          <g id="node-rr-s1" class="step-el">
+            <rect x="20" y="250" width="130" height="50" rx="8" class="diag-box diag-box-cover" />
+            <text x="85" y="271" text-anchor="middle" class="diagram-label">SELECT #1</text>
+            <text x="85" y="288" text-anchor="middle" class="diagram-sub">snapshot A → 100</text>
+          </g>
+          <line id="edge-rr-0" class="step-el diag-edge" x1="150" y1="275" x2="245" y2="275" marker-end="url(#arrow)" />
+
+          <g id="node-rr-commit" class="step-el">
+            <rect x="250" y="250" width="140" height="50" rx="8" class="diag-box" />
+            <text x="320" y="271" text-anchor="middle" class="diagram-label">Concurrent T2</text>
+            <text x="320" y="289" text-anchor="middle" class="diagram-sub">UPDATE→50; COMMIT</text>
+          </g>
+          <line id="edge-rr-1" class="step-el diag-edge" x1="390" y1="275" x2="465" y2="275" marker-end="url(#arrow)" />
+
+          <g id="node-rr-s2" class="step-el">
+            <rect x="470" y="250" width="150" height="50" rx="8" class="diag-box diag-box-cover" />
+            <text x="545" y="271" text-anchor="middle" class="diagram-label">SELECT #2</text>
+            <text x="545" y="288" text-anchor="middle" class="diagram-sub">snapshot A → 100 ✓</text>
+          </g>
+          <text x="545" y="326" text-anchor="middle" class="diagram-sub diag-skip-text">stable read — anomaly avoided</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>How MVCC delivers each level</h3>
+        <p>The level is essentially a choice of <em>when the snapshot is taken</em> and <em>how aggressively conflicts are checked</em>:</p>
+        <ul>
+          <li><strong>Read Committed</strong> — a fresh snapshot <em>per statement</em>: a SELECT sees only data committed before that query began. Because statement 2 has a newer snapshot than statement 1, non-repeatable and phantom reads slip through.</li>
+          <li><strong>Repeatable Read</strong> — one snapshot, taken at the first non-transaction-control statement (not literally at <code>BEGIN</code>) and frozen for the whole transaction. Successive SELECTs see identical data → no non-repeatable read, and in Postgres no phantom either. This is textbook Snapshot Isolation.</li>
+          <li><strong>Serializable</strong> — Repeatable Read's frozen snapshot <em>plus</em> runtime monitoring for serialization anomalies (SSI).</li>
+        </ul>
+        <p>One consequence is worth memorizing: because dirty reads mean "reading uncommitted versions" and MVCC <em>only ever shows committed versions</em>, <strong>dirty reads are structurally impossible under MVCC</strong>. That is exactly why Postgres maps Read Uncommitted onto Read Committed — there is no mechanism that could expose an uncommitted row in the first place.</p>
+
+        <h3>Write skew is a read/write conflict, not a write/write one</h3>
+        <p>The most common misconception about the "doctors on call" scenario is that it is two transactions updating the same rows. It is not. Write skew writes <strong>different</strong> rows — Alice updates Alice, Bob updates Bob — which is precisely why write-write conflict detection (what Repeatable Read does) misses it. The conflict lives in the <em>read sets</em>: each transaction read data the other then wrote. Serializable Snapshot Isolation catches it by tracking read/write dependencies (a "dangerous structure" where T1 read what T2 wrote <em>and</em> vice versa, corresponding to no serial order) using predicate locks (<code>SIReadLock</code> in <code>pg_locks</code>). These locks are detection-only: they never block, so they can never cause a deadlock — but the optimistic detect-and-abort approach can waste work, running a transaction to completion only to abort it at commit.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> using Repeatable Read or Serializable without a <code>40001</code> retry loop. Both levels are optimistic — they detect a conflict and <em>abort</em> rather than block — so an application that never retries is silently broken under concurrency.
+          <pre><code class="lang-text">ERROR:  could not serialize access due to read/write dependencies among transactions
+        -- SQLSTATE 40001 (Serializable)
+
+ERROR:  could not serialize access due to concurrent update
+        -- SQLSTATE 40001 (Repeatable Read, on a concurrent update to a row it read)</code></pre>
+          <p>Why it breaks: at these levels the database guarantees correctness by <em>refusing to commit</em> non-serializable interleavings, not by making everyone wait. The contract is that the application catches SQLSTATE <code>40001</code> and re-runs the entire transaction from the top. Without that loop, a doomed transaction simply surfaces the error to the user as a failure — the correctness guarantee is real, but the application threw it away.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming "Read Uncommitted gives dirty reads" in Postgres. The ANSI standard <em>permits</em> dirty reads at that level, but Postgres has no machinery to produce one — its Read Uncommitted behaves exactly like Read Committed. Code that relies on observing uncommitted data (for debugging, "progress" peeking, etc.) will never see it on Postgres. The standard specifies which anomalies <em>must not</em> occur; offering stronger guarantees is allowed, so the ANSI levels are a floor, not an exact specification.</p>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../acid-properties/index.html" data-entry="acid-properties">
+        <strong>ACID Properties</strong>
+        <span>Isolation levels are the tunable <em>I</em> in ACID — this is the parent guarantee that the whole anomaly×level dial sits inside.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The lock-based route to serializability that MVCC snapshots avoid; Postgres blends strict 2PL with MVCC, and predicate locks are how Serializable polices read sets.</span>
+      </a>
+      <a class="related-card" href="../deadlocks/index.html" data-entry="deadlocks">
+        <strong>Deadlocks — Detection, Prevention &amp; the Coffman Conditions</strong>
+        <span>The blocking failure mode that SSI's non-blocking predicate locks sidestep — contrast deadlock aborts (40P01) with serialization aborts (40001).</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>Builds on the same MVCC snapshot/visibility machinery — there it forces heap fetches; here it determines what each isolation level can see.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/transaction-iso.html" target="_blank" rel="noopener">PostgreSQL Documentation — Transaction Isolation</a> — fetched 2026-06-10</li>
+          <li><a href="https://en.wikipedia.org/wiki/Isolation_(database_systems)" target="_blank" rel="noopener">Wikipedia — Isolation (database systems)</a> — fetched 2026-06-10</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">What is the precise difference between a non-repeatable read and a phantom read, and why does it make phantoms harder to prevent?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">There is no real difference; both describe a row's value changing mid-transaction.</button>
+            <button class="option" data-correct="true">Non-repeatable = an existing row you already read changes (UPDATE/DELETE); phantom = the set matching a predicate changes (INSERT/DELETE). Phantoms need predicate/range locking because you can't lock a row that doesn't exist yet.</button>
+            <button class="option" data-correct="false">Phantom reads are caused by uncommitted data; non-repeatable reads only by committed data.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Non-repeatable read concerns a specific row you've already read; a phantom concerns the WHERE-clause population. Locking a row you've read is cheap row-level locking; preventing phantoms requires locking a <em>condition</em> (predicate/range/gap locks) since the offending row may not exist yet.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">In MVCC terms, what single mechanical difference between Read Committed and Repeatable Read explains why RR prevents non-repeatable reads?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">RR acquires an exclusive lock on every row it reads; RC does not.</button>
+            <button class="option" data-correct="true">RC takes a fresh snapshot per statement, so a later statement sees newer committed data; RR takes one snapshot at the first statement and freezes it for the whole transaction, so all reads see the same data.</button>
+            <button class="option" data-correct="false">RR disables concurrent writes entirely until it commits.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">It's purely <em>when the snapshot is taken</em>. RC's per-statement snapshot means statement 2 can see a commit that landed after statement 1; RR's single frozen snapshot (taken at the first non-transaction-control statement) makes successive reads identical.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Why is a dirty read structurally impossible in Postgres, even at Read Uncommitted? Tie it to MVCC.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>A dirty read means reading an <em>uncommitted</em> row version. Under MVCC, an uncommitted version is simply not visible to any other transaction — only versions whose writing transaction has committed are ever shown. There is no machinery that could expose uncommitted data, so the anomaly cannot occur. This is exactly why Postgres maps the standard's Read Uncommitted level onto Read Committed: it's the only sensible mapping to an MVCC architecture.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">The "doctors on call" scenario commits with zero doctors on call, yet no dirty, non-repeatable, or phantom read occurred. What anomaly is this, which level prevents it, and by what mechanism?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>It's a <strong>serialization anomaly</strong> (write skew): the result corresponds to no serial ordering of the two transactions. Only <strong>Serializable</strong> prevents it. The mechanism is SSI — Serializable Snapshot Isolation — which adds runtime detection on top of Snapshot Isolation. Critically, the two transactions write <em>different</em> rows, so write-write detection (Repeatable Read) misses it; SSI instead tracks <strong>read/write dependencies</strong> via non-blocking predicate locks and aborts one transaction (SQLSTATE <code>40001</code>) when it detects a dangerous rw-structure with no serial order.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What must any application using Repeatable Read or Serializable in Postgres do, what signal triggers it, and why is Serializable described as "non-blocking"?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>It must <strong>catch SQLSTATE <code>40001</code> and retry the entire transaction</strong>. Both levels are optimistic: they detect a non-serializable interleaving and abort rather than block, so without a retry loop the app is broken under concurrency. Serializable is "non-blocking" because its predicate locks (<code>SIReadLock</code>) are detection-only — they record what was read but never make another transaction wait, so they can't participate in a deadlock. The trade-off is wasted work: a doomed transaction can run to completion and only then be aborted at commit.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (MVCC snapshot timing: RC vs RR) ─────
+    const steps = [
+      { activate: ['#node-rc-s1'],
+        explanation: 'Read Committed, step 1: SELECT #1 runs and takes a fresh snapshot (A), reading balance = 100. Under RC, every statement gets its own snapshot of the latest committed data.' },
+      { activate: ['#node-rc-s1', '#edge-rc-0', '#node-rc-commit'],
+        explanation: 'A concurrent transaction T2 updates the balance to 50 and commits. This commit is now part of the latest committed state of the database.' },
+      { activate: ['#node-rc-commit', '#edge-rc-1', '#node-rc-s2'],
+        explanation: 'SELECT #2 runs and takes a NEW snapshot (B), which includes T2’s commit, so it reads 50. Two reads, two answers, one transaction — a non-repeatable read slips through precisely because each statement re-snapshots.' },
+      { activate: ['#node-rr-s1'],
+        explanation: 'Now Repeatable Read, step 1: SELECT #1 takes one snapshot (A) at the first statement and reads 100 — but this snapshot is frozen for the entire transaction.' },
+      { activate: ['#node-rr-s1', '#edge-rr-0', '#node-rr-commit'],
+        explanation: 'The same concurrent T2 updates to 50 and commits. The data really has changed in the database — but RR has already pinned its view of the world.' },
+      { activate: ['#node-rr-commit', '#edge-rr-1', '#node-rr-s2'],
+        explanation: 'SELECT #2 reuses the frozen snapshot A and still reads 100. The read is stable; the non-repeatable read is avoided. The cost: if RR later tries to write a row T2 changed, it gets a 40001 serialization error and must retry.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'acid-properties':   { title: 'ACID Properties', summary: 'The four transaction guarantees: WAL-backed atomicity (undo) & durability (redo), why C is the app’s job, isolation as a tunable dial, and the wedding-ceremony model.' },
+      'two-phase-locking': { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres’s MVCC+strict-2PL hybrid.' },
+      'deadlocks':         { title: 'Deadlocks — Detection, Prevention & the Coffman Conditions', summary: 'The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.' },
+      'covering-indexes':  { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

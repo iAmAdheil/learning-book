@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>networks — Learning Book</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="landing-header">
+    <div class="landing-nav">
+      <a class="back-link" href="../global-index.html">⊞ All topics</a>
+    </div>
+    <h1>networks</h1>
+    <p class="subtitle">10 entries · last updated 2026-07-12</p>
+    <div class="controls">
+      <input class="search" type="search" placeholder="Search entries…" aria-label="Search entries" />
+      <div class="tag-filter" role="group" aria-label="Filter by tag">
+        <button class="tag-chip" data-tag="layer-2">layer-2</button>
+        <button class="tag-chip" data-tag="fundamentals">fundamentals</button>
+        <button class="tag-chip" data-tag="ip">ip</button>
+        <button class="tag-chip" data-tag="encapsulation">encapsulation</button>
+        <button class="tag-chip" data-tag="arp">arp</button>
+        <button class="tag-chip" data-tag="broadcast">broadcast</button>
+        <button class="tag-chip" data-tag="broadcast-domain">broadcast-domain</button>
+        <button class="tag-chip" data-tag="ethertype">ethertype</button>
+        <button class="tag-chip" data-tag="layering">layering</button>
+        <button class="tag-chip" data-tag="mac">mac</button>
+        <button class="tag-chip" data-tag="mtu">mtu</button>
+        <button class="tag-chip" data-tag="osi-model">osi-model</button>
+        <button class="tag-chip" data-tag="switch">switch</button>
+        <button class="tag-chip clear" data-tag="">clear</button>
+      </div>
+      <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+    </div>
+  </header>
+
+  <main class="entries-grid" id="entries-grid">
+    <a class="entry-card" href="entries/bandwidth-throughput-latency-jitter/index.html"
+       data-tags="fundamentals performance bandwidth throughput latency jitter rtt bandwidth-delay-product cdn qos"
+       data-title="bandwidth vs throughput vs latency vs jitter"
+       data-desc="the four performance words precisely: rates vs times, the highway model, bandwidth≠speed, latency-bound vs bandwidth-bound, bdp, and jitter/qos.">
+      <h2 class="entry-title">Bandwidth vs Throughput vs Latency vs Jitter</h2>
+      <p class="entry-desc">The four performance words precisely: rates vs times, the highway model, bandwidth≠speed, latency-bound vs bandwidth-bound, BDP, and jitter/QoS.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">performance</span>
+        <span class="badge tag">bandwidth</span>
+        <span class="badge tag">throughput</span>
+        <span class="badge tag">latency</span>
+        <span class="badge tag">jitter</span>
+        <span class="badge tag">rtt</span>
+        <span class="badge tag">bandwidth-delay-product</span>
+        <span class="badge tag">cdn</span>
+        <span class="badge tag">qos</span>
+        <span class="badge related">↔ 2</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/ethernet/index.html"
+       data-tags="layer-2 ethernet mac-address frame ethertype fcs mtu csma-cd broadcast oui"
+       data-title="ethernet — frame format, mac addresses &amp; ethertype"
+       data-desc="the l2 reality: 48-bit macs (oui + device, broadcast/unicast/multicast), the frame format, ethertype demux, fcs best-effort error detection, and the 1500-byte mtu.">
+      <h2 class="entry-title">Ethernet — Frame Format, MAC Addresses &amp; EtherType</h2>
+      <p class="entry-desc">The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">ethernet</span>
+        <span class="badge tag">mac-address</span>
+        <span class="badge tag">frame</span>
+        <span class="badge tag">ethertype</span>
+        <span class="badge tag">fcs</span>
+        <span class="badge tag">mtu</span>
+        <span class="badge tag">csma-cd</span>
+        <span class="badge tag">broadcast</span>
+        <span class="badge tag">oui</span>
+        <span class="badge related">↔ 6</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/how-switches-work/index.html"
+       data-tags="layer-2 switch cam-table mac-address-table mac-learning flooding broadcast-domain collision-domain port-security cam-overflow"
+       data-title="how switches work — mac learning, cam table, forward/flood/filter"
+       data-desc="self-teaching frame forwarding: learn from source, decide by destination; forward/flood/filter, the cam table, one-switch-one-broadcast-domain, and cam overflow.">
+      <h2 class="entry-title">How Switches Work — MAC Learning, CAM Table, Forward/Flood/Filter</h2>
+      <p class="entry-desc">Self-teaching frame forwarding: learn from SOURCE, decide by DESTINATION; forward/flood/filter, the CAM table, one-switch-one-broadcast-domain, and CAM overflow.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">switch</span>
+        <span class="badge tag">cam-table</span>
+        <span class="badge tag">mac-address-table</span>
+        <span class="badge tag">mac-learning</span>
+        <span class="badge tag">flooding</span>
+        <span class="badge tag">broadcast-domain</span>
+        <span class="badge tag">collision-domain</span>
+        <span class="badge tag">port-security</span>
+        <span class="badge tag">cam-overflow</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/vlans/index.html"
+       data-tags="layer-2 vlan 802.1q tagging access-port trunk-port native-vlan broadcast-domain segmentation vlan-hopping inter-vlan-routing"
+       data-title="vlans — segmentation, access vs trunk ports, 802.1q tagging"
+       data-desc="slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1q tag, tag add/strip journey, native-vlan hopping, and vlan-scoped flooding.">
+      <h2 class="entry-title">VLANs — Segmentation, Access vs Trunk Ports, 802.1Q Tagging</h2>
+      <p class="entry-desc">Slicing one switch into many virtual switches: access vs trunk, the 4-byte 802.1Q tag, tag add/strip journey, native-VLAN hopping, and VLAN-scoped flooding.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">vlan</span>
+        <span class="badge tag">802.1q</span>
+        <span class="badge tag">tagging</span>
+        <span class="badge tag">access-port</span>
+        <span class="badge tag">trunk-port</span>
+        <span class="badge tag">native-vlan</span>
+        <span class="badge tag">broadcast-domain</span>
+        <span class="badge tag">segmentation</span>
+        <span class="badge tag">vlan-hopping</span>
+        <span class="badge tag">inter-vlan-routing</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/spanning-tree-protocol/index.html"
+       data-tags="layer-2 stp rstp spanning-tree loop-prevention root-bridge bpdu broadcast-storm bridge-id portfast bpdu-guard 802.1d 802.1w"
+       data-title="spanning tree protocol (stp/rstp) — loop prevention &amp; root bridge election"
+       data-desc="why l2 loops are fatal (no ttl → broadcast storm) and how stp blocks them: root-bridge election, root/designated/blocking ports, path cost, and rstp&#x27;s fast convergence.">
+      <h2 class="entry-title">Spanning Tree Protocol (STP/RSTP) — Loop Prevention &amp; Root Bridge Election</h2>
+      <p class="entry-desc">Why L2 loops are fatal (no TTL → broadcast storm) and how STP blocks them: root-bridge election, root/designated/blocking ports, path cost, and RSTP&#x27;s fast convergence.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">stp</span>
+        <span class="badge tag">rstp</span>
+        <span class="badge tag">spanning-tree</span>
+        <span class="badge tag">loop-prevention</span>
+        <span class="badge tag">root-bridge</span>
+        <span class="badge tag">bpdu</span>
+        <span class="badge tag">broadcast-storm</span>
+        <span class="badge tag">bridge-id</span>
+        <span class="badge tag">portfast</span>
+        <span class="badge tag">bpdu-guard</span>
+        <span class="badge tag">802.1d</span>
+        <span class="badge tag">802.1w</span>
+        <span class="badge related">↔ 3</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/arp/index.html"
+       data-tags="layer-2 arp address-resolution arp-cache gratuitous-arp arp-spoofing mitm broadcast ndp next-hop default-gateway"
+       data-title="arp — resolving ip → mac, arp cache, gratuitous arp"
+       data-desc="the glue between ip and mac: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous arp for failover, and why arp spoofing enables mitm.">
+      <h2 class="entry-title">ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP</h2>
+      <p class="entry-desc">The glue between IP and MAC: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous ARP for failover, and why ARP spoofing enables MITM.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">arp</span>
+        <span class="badge tag">address-resolution</span>
+        <span class="badge tag">arp-cache</span>
+        <span class="badge tag">gratuitous-arp</span>
+        <span class="badge tag">arp-spoofing</span>
+        <span class="badge tag">mitm</span>
+        <span class="badge tag">broadcast</span>
+        <span class="badge tag">ndp</span>
+        <span class="badge tag">next-hop</span>
+        <span class="badge tag">default-gateway</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-07-12</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/how-internet-works/index.html"
+       data-tags="fundamentals dns tcp udp ip routing arp encapsulation"
+       data-title="how the internet works end-to-end — a packet&#x27;s journey"
+       data-desc="a packet&#x27;s full journey from browser to server and back: dns, arp, encapsulation, tcp/tls handshakes, hop-by-hop routing, and why the network is best-effort.">
+      <h2 class="entry-title">How the Internet Works End-to-End — A Packet&#x27;s Journey</h2>
+      <p class="entry-desc">A packet&#x27;s full journey from browser to server and back: DNS, ARP, encapsulation, TCP/TLS handshakes, hop-by-hop routing, and why the network is best-effort.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">dns</span>
+        <span class="badge tag">tcp</span>
+        <span class="badge tag">udp</span>
+        <span class="badge tag">ip</span>
+        <span class="badge tag">routing</span>
+        <span class="badge tag">arp</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="badge related">↔ 6</span>
+        <span class="meta-dates">2026-07-07</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/osi-model/index.html"
+       data-tags="fundamentals osi-model layering switch router layer-2 layer-3 encapsulation mac ip"
+       data-title="osi 7-layer model — what each layer does and why the split exists"
+       data-desc="the seven layers and why layering exists; pdus, the l2-vs-l3 (switch-vs-router) distinction, osi-vs-tcp/ip reality check, and the l2/l3/l4/l7 vocabulary.">
+      <h2 class="entry-title">OSI 7-Layer Model — What Each Layer Does and Why the Split Exists</h2>
+      <p class="entry-desc">The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">osi-model</span>
+        <span class="badge tag">layering</span>
+        <span class="badge tag">switch</span>
+        <span class="badge tag">router</span>
+        <span class="badge tag">layer-2</span>
+        <span class="badge tag">layer-3</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="badge tag">mac</span>
+        <span class="badge tag">ip</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-07-07</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/tcp-ip-model/index.html"
+       data-tags="fundamentals tcp-ip-model osi-model layering hourglass narrow-waist ip sockets tls"
+       data-title="tcp/ip model — how the 4/5-layer model maps to reality vs osi"
+       data-desc="the real stack the internet runs on: 4- vs 5-layer, the osi→tcp/ip mapping, where tls/sockets sit, and the hourglass/narrow-waist model.">
+      <h2 class="entry-title">TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI</h2>
+      <p class="entry-desc">The real stack the internet runs on: 4- vs 5-layer, the OSI→TCP/IP mapping, where TLS/sockets sit, and the hourglass/narrow-waist model.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">tcp-ip-model</span>
+        <span class="badge tag">osi-model</span>
+        <span class="badge tag">layering</span>
+        <span class="badge tag">hourglass</span>
+        <span class="badge tag">narrow-waist</span>
+        <span class="badge tag">ip</span>
+        <span class="badge tag">sockets</span>
+        <span class="badge tag">tls</span>
+        <span class="badge related">↔ 3</span>
+        <span class="meta-dates">2026-07-07</span>
+      </div>
+    </a>
+    <a class="entry-card" href="entries/encapsulation-decapsulation/index.html"
+       data-tags="fundamentals encapsulation decapsulation pdu headers demultiplexing mtu ethertype ttl mac ip"
+       data-title="encapsulation &amp; decapsulation — segments → packets → frames → bits"
+       data-desc="dolls-in-dolls header wrapping/unwrapping: pdu names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.">
+      <h2 class="entry-title">Encapsulation &amp; Decapsulation — Segments → Packets → Frames → Bits</h2>
+      <p class="entry-desc">Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="badge tag">decapsulation</span>
+        <span class="badge tag">pdu</span>
+        <span class="badge tag">headers</span>
+        <span class="badge tag">demultiplexing</span>
+        <span class="badge tag">mtu</span>
+        <span class="badge tag">ethertype</span>
+        <span class="badge tag">ttl</span>
+        <span class="badge tag">mac</span>
+        <span class="badge tag">ip</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-07-07</span>
+      </div>
+    </a>
+    <p class="empty-state" hidden>No entries match. Try a different search or clear filters.</p>
+  </main>
+
+  <script>
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    const cards = Array.from(document.querySelectorAll('.entry-card'));
+    const search = document.querySelector('.search');
+    const emptyState = document.querySelector('.empty-state');
+    const activeTags = new Set();
+
+    function apply() {
+      const q = search.value.trim().toLowerCase();
+      let visible = 0;
+      cards.forEach(card => {
+        const matchText = !q || card.dataset.title.includes(q) || card.dataset.desc.includes(q);
+        const cardTags = new Set(card.dataset.tags.split(' ').filter(Boolean));
+        const matchTag = activeTags.size === 0 || [...activeTags].every(t => cardTags.has(t));
+        card.hidden = !(matchText && matchTag);
+        if (!card.hidden) visible++;
+      });
+      emptyState.hidden = visible > 0;
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (activeTags.size) params.set('tags', [...activeTags].join(','));
+      history.replaceState(null, '', params.toString() ? '?' + params : location.pathname);
+    }
+
+    search.addEventListener('input', () => { clearTimeout(search._t); search._t = setTimeout(apply, 150); });
+
+    document.querySelectorAll('.tag-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        const tag = chip.dataset.tag;
+        if (!tag) { activeTags.clear(); document.querySelectorAll('.tag-chip').forEach(c => c.classList.remove('active')); }
+        else { activeTags.has(tag) ? activeTags.delete(tag) : activeTags.add(tag); chip.classList.toggle('active'); }
+        apply();
+      });
+    });
+
+    const params = new URLSearchParams(location.search);
+    if (params.get('q')) { search.value = params.get('q'); }
+    if (params.get('tags')) params.get('tags').split(',').forEach(t => {
+      activeTags.add(t);
+      document.querySelector(`.tag-chip[data-tag="${t}"]`)?.classList.add('active');
+    });
+    apply();
+  </script>
+</body>
+</html>

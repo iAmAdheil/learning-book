@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>How the Internet Works End-to-End — networks</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-specific diagram rules: propagate .active from a message group to its parts */
+    .diagram-svg .step-el.active .node-rect { fill: var(--accent-soft); stroke: var(--accent); }
+    .diagram-svg .step-el.active .edge-line { stroke: var(--accent); color: var(--accent); }
+    .diagram-svg .step-el.active .label-text { fill: var(--text); }
+    .diagram-svg .edge-line { color: var(--border); }
+    .diagram-svg .lifeline { stroke: var(--border); stroke-width: 1; stroke-dasharray: 3 5; opacity: 0.6; }
+    .diagram-svg .layer-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .layer-text { fill: var(--text); font-family: var(--mono, monospace); font-size: 10px; }
+    /* Prominent misconception callout */
+    .insight {
+      border-left: 3px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 0.85rem 1rem;
+      border-radius: 0 8px 8px 0;
+      margin: 1.5rem 0;
+    }
+    .insight > :first-child { margin-top: 0; }
+    .insight > :last-child { margin-bottom: 0; }
+    .insight h3 { margin-top: 0; color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← networks book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>How the Internet Works End-to-End — A Packet's Journey</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Typing <code>https://example.com</code> and seeing a page appear takes roughly a tenth of a second — and in that tenth of a second a name is looked up in a global directory, a hardware address is shouted for on the local wire, the request is wrapped in five nested layers of packaging, two separate negotiations happen before a single byte of content moves, and the data hops across dozens of independent networks and back. <strong>Every other networking topic is a zoom-in on one leg of this trip.</strong> Walk it once end-to-end and the rest of the field has somewhere to hang.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">fundamentals</span>
+        <span class="badge tag">dns</span>
+        <span class="badge tag">tcp</span>
+        <span class="badge tag">udp</span>
+        <span class="badge tag">ip</span>
+        <span class="badge tag">routing</span>
+        <span class="badge tag">arp</span>
+        <span class="badge tag">encapsulation</span>
+        <span class="meta-dates">Created 2026-07-07 · Updated 2026-07-07</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>IP address</dt>
+        <dd>The <strong>end-to-end</strong> identifier of a machine on the internet (e.g. <code>93.184.215.14</code>). It names the final recipient of the journey and — this is the load-bearing part — it does <em>not change</em> as the data crosses the network.</dd>
+
+        <dt>MAC address</dt>
+        <dd>The <strong>hop-to-hop</strong> hardware address burned into a network chip. It identifies "the device physically next to me on this one link," and it is <em>rewritten at every hop</em>. IP and MAC are two kinds of address with two different scopes; conflating them is the single most common beginner error.</dd>
+
+        <dt>DNS (Domain Name System)</dt>
+        <dd>The internet's distributed phone book: name in, IP out. A <strong>resolver</strong> answers from cache when it can, otherwise it walks a hierarchy (root → <code>.com</code> top-level-domain server → the authoritative server for the domain). Answers carry a <strong>TTL</strong> (time-to-live) that bounds how long they may be cached.</dd>
+
+        <dt>Default gateway &amp; ARP</dt>
+        <dd>A machine can only physically reach devices on its own <strong>local network (LAN)</strong>. Anything else is handed to the <strong>default gateway</strong> — the router — to forward onward. To address a frame to that router, the machine needs the router's MAC, so it uses <strong>ARP (Address Resolution Protocol)</strong>: "who has <code>192.168.1.1</code>? Tell me your MAC."</dd>
+
+        <dt>Encapsulation</dt>
+        <dd>Wrapping data in nested layers, each adding its own header for its own job: HTTP inside TLS inside TCP inside IP inside Ethernet. Every layer reads only its own header and treats everything inside as opaque cargo. <strong>Decapsulation</strong> is the same process in reverse at the receiver.</dd>
+
+        <dt>TCP and UDP (the transport layer)</dt>
+        <dd>The two protocols that sit directly on top of IP and use <strong>port numbers</strong> to identify which application on the machine a message belongs to. <strong>TCP</strong> adds reliability — sequence numbers, acknowledgments, retransmission, ordering — behind a three-way <strong>handshake</strong> (SYN / SYN-ACK / ACK). <strong>UDP</strong> adds essentially nothing but ports.</dd>
+
+        <dt>Router, routing table, and best-effort delivery</dt>
+        <dd>A <strong>router</strong> joins networks. For each arriving packet it reads the destination IP, consults its <strong>routing table</strong> for the best next neighbour, rewrites the link-layer header, decrements the <strong>TTL</strong> hop counter, and forwards. No router knows the whole path. The network as a whole promises nothing — it may drop, duplicate, or reorder packets. That is what <strong>best-effort</strong> means.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Take one laptop on a home network requesting <code>https://example.com</code>. Six things happen, in order.</p>
+
+      <p><strong>Act 1 — name resolution.</strong> Machines route by IP address, not by name, so the very first step is a DNS lookup. It happens before any connection to the web server exists, and it usually rides on UDP:</p>
+      <pre><code class="lang-text">laptop  → resolver : "A record for example.com?"        (UDP, port 53)
+resolver→ root     : "who handles .com?"                 ┐
+resolver→ .com TLD : "who is authoritative for example.com?"  ├ only on a cache miss
+resolver→ auth NS  : "what is example.com?"              ┘
+resolver→ laptop   : "93.184.215.14, TTL 3600"           (now cached for an hour)</code></pre>
+
+      <p><strong>Act 2 — leaving the local network.</strong> The laptop compares the destination IP against its own subnet. Not local, so the packet must go to the default gateway. It knows the gateway's <em>IP</em> (<code>192.168.1.1</code>) but needs its <em>MAC</em> to build a frame, so it ARPs for it:</p>
+      <pre><code class="lang-text">laptop → (broadcast) : ARP "who has 192.168.1.1? tell 192.168.1.5"
+router → laptop      : ARP "192.168.1.1 is at a4:2b:8c:11:9f:03"</code></pre>
+      <p>Note carefully what was <em>not</em> asked for: the laptop never ARPs for the server's MAC. The server is not on this link, so its MAC is meaningless here — and unknowable. The laptop asks only "who is next?"</p>
+
+      <p><strong>Act 3 — building the packet.</strong> Each layer wraps the one above it, adding a header for its own job. The real message ends up buried deepest, inside progressively more shipping-and-handling metadata:</p>
+      <pre class="diagram"><code class="lang-text">        ┌─────────────────────────────────────────────┐
+Frame → │ Eth │ IP │ TCP │ TLS │ HTTP: "GET /"         │ ← the actual request
+        └─────────────────────────────────────────────┘
+          ▲     ▲     ▲     ▲
+          │     │     │     └─ encryption (the padlock)
+          │     │     └─ "port 443, reliable, in order"
+          │     └─ "from my IP → to 93.184.215.14"     (end-to-end, never changes)
+          └─ "from my MAC → to router's MAC"           (this one hop only)</code></pre>
+
+      <p><strong>Act 4 — two handshakes before any content.</strong> TCP first agrees that both sides are talking, then TLS proves the server's identity with a certificate signed by a trusted authority and derives a shared secret:</p>
+      <pre><code class="lang-text">laptop → server : SYN      "let's talk? here is my starting sequence number"
+server → laptop : SYN-ACK  "sure — got yours, here is mine"
+laptop → server : ACK      "confirmed, we are connected"
+        ⇄        : TLS      certificate, key agreement
+laptop → server : GET /    (encrypted)</code></pre>
+      <p>This is why latency dominates page load: several full round-trips complete before one byte of HTML is requested.</p>
+
+      <p><strong>Act 5 — crossing the internet.</strong> The internet is not one network. It is on the order of 75,000 independently operated networks — <strong>Autonomous Systems</strong>: ISPs, backbone carriers, data centres — that agree to pass each other's traffic. At every router the same tiny decision repeats: read the destination IP, look up the best next neighbour in the routing table, rewrite the link-layer header for that next hop, decrement TTL, forward. <code>traceroute</code> makes the chain visible:</p>
+      <pre><code class="lang-text">$ traceroute example.com
+ 1  192.168.1.1        1.2 ms     ← home router (the gateway ARP found)
+ 2  10.24.0.1          9.8 ms     ← ISP access network
+ 3  ae-11.core1.isp.net  11.4 ms  ← ISP core
+ 4  peer.ix.example    24.7 ms    ← exchange point between two Autonomous Systems
+ 5  edge.example.com   26.1 ms    ← destination network</code></pre>
+      <p>No single router on that list knows the whole route. Each knows only the next best step — like driving across a continent using nothing but road signs. Full path knowledge is <em>distributed</em> across thousands of routers and kept roughly in sync by routing protocols.</p>
+
+      <p><strong>Act 6 — arrival, response, and the return trip.</strong> At the server (in practice often a load balancer or edge cache first) everything unwraps in reverse: Ethernet header stripped, IP checked, TCP matched to the right connection, TLS decrypted, and only then is the HTTP request read. The response runs the whole machine backwards — HTTP → TLS → TCP → IP with source and destination swapped → Ethernet — back through the routers, possibly along a <em>different</em> path, up the laptop's stack, and into the renderer. The returned HTML usually references more resources, triggering dozens more journeys, most of which reuse the already-open connection.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of posting a letter. The address on the envelope is the <strong>IP address</strong>: it names the final recipient and never changes, no matter where the letter is. But the letter does not teleport there. It goes mailbox → local post office → sorting hub → destination hub → carrier, and every one of those handoffs is a short-range, purely local relationship between two parties who can physically see each other. That handoff is the <strong>MAC address</strong>. The envelope is the <em>plan</em>; the handoffs are the <em>execution</em>. Once you hold those two apart, routing, switching, and ARP stop being mysterious.</p>
+
+      <p>The second model to burn in is <strong>smart edges, dumb middle</strong>. The routers in the core do one thing: forward packets toward a destination, best-effort, promising nothing. All the intelligence — reliability, ordering, retransmission, encryption — lives in the two endpoint machines. This is the exact inverse of the old telephone system (smart switching network, dumb handsets), and it is <em>why</em> the internet scaled: there is no central brain that has to be upgraded, and none that can fail.</p>
+
+      <p>Step through the full round trip below. Five participants, six acts, and — worth watching for — the destination IP stays constant the entire way while the link-layer addressing is rebuilt at every hop.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 700 492" aria-label="Sequence diagram of one HTTPS request: DNS lookup, ARP for the gateway, encapsulation, TCP and TLS handshakes, hop-by-hop routing, server decapsulation, and the response path back to the laptop">
+          <defs>
+            <marker id="arrow-r" markerWidth="9" markerHeight="9" refX="7" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="currentColor" />
+            </marker>
+            <marker id="arrow-l" markerWidth="9" markerHeight="9" refX="0" refY="3" orient="auto-start-reverse" markerUnits="strokeWidth">
+              <path d="M0,0 L7,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Lifelines ── -->
+          <line class="lifeline" x1="62"  y1="46" x2="62"  y2="474" />
+          <line class="lifeline" x1="200" y1="46" x2="200" y2="474" />
+          <line class="lifeline" x1="338" y1="46" x2="338" y2="474" />
+          <line class="lifeline" x1="476" y1="46" x2="476" y2="474" />
+          <line class="lifeline" x1="630" y1="46" x2="630" y2="474" />
+
+          <!-- ── Participant headers ── -->
+          <g id="node-laptop" class="step-el">
+            <rect class="node-rect" x="7" y="6" width="110" height="40" />
+            <text class="node-text" x="62" y="24" text-anchor="middle">Laptop</text>
+            <text class="label-text" x="62" y="38" text-anchor="middle">192.168.1.5</text>
+          </g>
+          <g id="node-dns" class="step-el">
+            <rect class="node-rect" x="145" y="6" width="110" height="40" />
+            <text class="node-text" x="200" y="24" text-anchor="middle">DNS resolver</text>
+            <text class="label-text" x="200" y="38" text-anchor="middle">port 53, UDP</text>
+          </g>
+          <g id="node-gw" class="step-el">
+            <rect class="node-rect" x="283" y="6" width="110" height="40" />
+            <text class="node-text" x="338" y="24" text-anchor="middle">Home router</text>
+            <text class="label-text" x="338" y="38" text-anchor="middle">gateway 192.168.1.1</text>
+          </g>
+          <g id="node-core" class="step-el">
+            <rect class="node-rect" x="421" y="6" width="110" height="40" />
+            <text class="node-text" x="476" y="24" text-anchor="middle">Internet core</text>
+            <text class="label-text" x="476" y="38" text-anchor="middle">~75k networks</text>
+          </g>
+          <g id="node-server" class="step-el">
+            <rect class="node-rect" x="571" y="6" width="118" height="40" />
+            <text class="node-text" x="630" y="24" text-anchor="middle">example.com</text>
+            <text class="label-text" x="630" y="38" text-anchor="middle">93.184.215.14</text>
+          </g>
+
+          <!-- ── Act 1: DNS ── -->
+          <g id="msg-dns-q" class="step-el">
+            <text class="label-text" x="131" y="68" text-anchor="middle">"what is the IP for example.com?"</text>
+            <line class="edge-line" x1="68" y1="76" x2="194" y2="76" marker-end="url(#arrow-r)" />
+          </g>
+          <g id="msg-dns-r" class="step-el">
+            <line class="edge-line" x1="194" y1="100" x2="68" y2="100" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="131" y="114" text-anchor="middle">"93.184.215.14" — cached until TTL expires</text>
+          </g>
+
+          <!-- ── Act 2: ARP ── -->
+          <g id="msg-arp-q" class="step-el">
+            <text class="label-text" x="203" y="140" text-anchor="middle">ARP broadcast: "who has 192.168.1.1?"</text>
+            <line class="edge-line" x1="68" y1="148" x2="332" y2="148" marker-end="url(#arrow-r)" />
+          </g>
+          <g id="msg-arp-r" class="step-el">
+            <line class="edge-line" x1="332" y1="170" x2="68" y2="170" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="203" y="184" text-anchor="middle">"…is at a4:2b:8c:11:9f:03" — the gateway's MAC</text>
+          </g>
+
+          <!-- ── Act 3: encapsulation ── -->
+          <g id="g-encap" class="step-el">
+            <text class="label-text" x="22" y="206" text-anchor="start">encapsulation on the laptop — outermost header is the most local</text>
+            <rect class="layer-box" x="22"  y="212" width="52"  height="26" />
+            <rect class="layer-box" x="74"  y="212" width="52"  height="26" />
+            <rect class="layer-box" x="126" y="212" width="52"  height="26" />
+            <rect class="layer-box" x="178" y="212" width="52"  height="26" />
+            <rect class="layer-box" x="230" y="212" width="150" height="26" />
+            <text class="layer-text" x="48"  y="229" text-anchor="middle">Eth</text>
+            <text class="layer-text" x="100" y="229" text-anchor="middle">IP</text>
+            <text class="layer-text" x="152" y="229" text-anchor="middle">TCP</text>
+            <text class="layer-text" x="204" y="229" text-anchor="middle">TLS</text>
+            <text class="layer-text" x="305" y="229" text-anchor="middle">HTTP: GET /</text>
+            <text class="label-text" x="48"  y="252" text-anchor="middle">this hop</text>
+            <text class="label-text" x="100" y="252" text-anchor="middle">end-to-end</text>
+            <text class="label-text" x="152" y="252" text-anchor="middle">port 443</text>
+            <text class="label-text" x="204" y="252" text-anchor="middle">encrypts</text>
+          </g>
+
+          <!-- ── Act 4: TCP handshake ── -->
+          <g id="msg-syn" class="step-el">
+            <text class="label-text" x="346" y="274" text-anchor="middle">SYN — "let's talk? here is my starting sequence number"</text>
+            <line class="edge-line" x1="68" y1="282" x2="624" y2="282" marker-end="url(#arrow-r)" />
+          </g>
+          <g id="msg-synack" class="step-el">
+            <line class="edge-line" x1="624" y1="302" x2="68" y2="302" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="346" y="316" text-anchor="middle">SYN-ACK — "sure, got yours, here is mine"</text>
+          </g>
+          <g id="msg-ack" class="step-el">
+            <line class="edge-line" x1="68" y1="330" x2="624" y2="330" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="346" y="344" text-anchor="middle">ACK — connection established (1 round trip spent)</text>
+          </g>
+
+          <!-- ── Act 4b: TLS ── -->
+          <g id="msg-tls" class="step-el">
+            <line class="edge-line" x1="68" y1="362" x2="624" y2="362" marker-start="url(#arrow-l)" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="346" y="376" text-anchor="middle">TLS — server proves identity with a signed certificate, both derive a shared key</text>
+          </g>
+
+          <!-- ── Act 5: request + routing ── -->
+          <g id="msg-get" class="step-el">
+            <line class="edge-line" x1="68" y1="396" x2="624" y2="396" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="346" y="392" text-anchor="middle">encrypted GET /</text>
+          </g>
+          <g id="note-routing" class="step-el">
+            <text class="label-text" x="476" y="412" text-anchor="middle">at every router: read destination IP → routing table → next hop</text>
+            <text class="label-text" x="476" y="424" text-anchor="middle">rewrite MAC header, TTL − 1, forward. IP unchanged.</text>
+          </g>
+
+          <!-- ── Act 6: server decapsulation ── -->
+          <g id="note-server" class="step-el">
+            <text class="label-text" x="692" y="412" text-anchor="end">decapsulate up the stack:</text>
+            <text class="label-text" x="692" y="424" text-anchor="end">Eth → IP → TCP → TLS → HTTP</text>
+          </g>
+
+          <!-- ── Return path ── -->
+          <g id="msg-resp" class="step-el">
+            <line class="edge-line" x1="624" y1="446" x2="68" y2="446" marker-end="url(#arrow-r)" />
+            <text class="label-text" x="346" y="440" text-anchor="middle">200 OK + HTML — re-encapsulated, possibly a different route home</text>
+          </g>
+          <g id="note-render" class="step-el">
+            <text class="label-text" x="10" y="468" text-anchor="start">laptop decapsulates, TCP reorders, TLS decrypts, browser renders</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <div class="insight">
+        <h3>Misconception check: "if TCP runs only on the endpoints, is it even a protocol?"</h3>
+        <p>Yes. A protocol is an agreed set of rules for a conversation — "if I send X, you reply Y." But rules have to be <em>executed by something</em>, and TCP's rules are implemented in software, specifically in the <strong>operating system kernel</strong> on each machine. So "TCP runs only on the endpoints" is a statement about <em>where the code lives</em>, not about whether TCP counts as a protocol. The routers in between do not run TCP at all: they read the IP header, forward, and never look inside.</p>
+        <pre class="diagram"><code class="lang-text">   LAPTOP                 routers in the middle              SERVER
+ ┌────────┐          ┌─────┐   ┌─────┐   ┌─────┐          ┌────────┐
+ │  TCP   │──────────│ IP  │───│ IP  │───│ IP  │──────────│  TCP   │
+ │(kernel)│          │only │   │only │   │only │          │(kernel)│
+ └────────┘          └─────┘   └─────┘   └─────┘          └────────┘
+     ▲                                                        ▲
+     └────────── the TCP conversation is only between these two ──────┘</code></pre>
+        <p>Routers are postal trucks: they carry the sealed envelope and never open it.</p>
+      </div>
+
+      <p>That framing also settles the usual TCP-vs-UDP confusion. Both are transport-layer protocols, both run as kernel software on the endpoints, and both use port numbers to say which application a message is for. The shared structure is why they feel similar. Their jobs, however, are opposites — read the row for UDP as a list of things it deliberately does <em>not</em> do:</p>
+
+      <table class="compare">
+        <thead>
+          <tr>
+            <th>Transport</th>
+            <th>Detects loss</th>
+            <th>Retransmits</th>
+            <th>Restores order</th>
+            <th>Handshake first</th>
+            <th>Guarantees delivery</th>
+            <th>Setup cost</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>UDP</td>
+            <td data-score="25">no</td>
+            <td data-score="25">no</td>
+            <td data-score="25">no</td>
+            <td data-score="25">no — just fire</td>
+            <td data-score="25">no</td>
+            <td data-score="90">none — send immediately</td>
+          </tr>
+          <tr>
+            <td>TCP</td>
+            <td data-score="90">yes</td>
+            <td data-score="90">yes</td>
+            <td data-score="90">yes</td>
+            <td data-score="90">yes — SYN / SYN-ACK / ACK</td>
+            <td data-score="90">yes, or reports failure</td>
+            <td data-score="30">a round trip, plus waiting on ACKs</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="insight">
+        <p><strong>The insight that makes the table unnecessary:</strong> raw IP gives only unreliable, best-effort delivery. <strong>UDP ≈ raw IP with almost nothing added</strong> — the thinnest possible wrapper, essentially just port numbers — so it exposes the network's native "no promises" nature directly to the application. <strong>TCP = raw IP plus a reliability machine</strong> (sequence numbers, acknowledgments, retransmission, reordering, flow control) that hides that unreliability behind a clean, ordered pipe.</p>
+        <p>So the instinct "isn't the underlying network sort of UDP-like already?" is exactly right. The network <em>is</em> unreliable. UDP leaves that showing; TCP papers over it.</p>
+        <p><em>One line to keep:</em> the network is dumb and unreliable — UDP hands you that raw and fast, TCP does the extra work to hide it.</p>
+      </div>
+
+      <p>Which raises the obvious question: why would anyone choose UDP? Because reliability costs <em>time</em>. Handshakes, waiting for acknowledgments, and retransmission delays all add latency. For a video call or a game, a slightly-damaged frame delivered <em>now</em> beats a perfectly-recovered frame delivered 200 ms <em>late</em>. Speed over guarantees — that is the whole trade.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Packets are independent, and that is the point</h3>
+        <p>Two packets belonging to the same request can take different routes through the internet and arrive out of order — or not at all. The network makes no promises, and that is a deliberate design choice, not a defect: <strong>packet switching</strong> rather than circuit switching. Nothing in the middle holds per-conversation state, so nothing in the middle is a single point of failure and nothing in the middle has to be upgraded when a new application protocol appears. Reliability is <em>reconstructed at the edges</em> by TCP, which notices gaps in sequence numbers and asks for the missing pieces again.</p>
+        <p>This has a practical consequence worth internalising: when a connection "feels slow," the middle of the network is almost never doing anything clever about it. What you are usually observing is TCP at the endpoints detecting loss and backing off.</p>
+
+        <h3>The TTL field is a loop insurance policy</h3>
+        <p>Because no router knows the full path, misconfigured or transiently inconsistent routing tables can send a packet in a circle. The <strong>TTL</strong> (time-to-live) counter in the IP header is decremented at every hop, and the packet is discarded when it reaches zero. Without it, a routing loop would accumulate packets forever. <code>traceroute</code> is a clever abuse of this mechanism: send packets with TTL 1, 2, 3… and each router in turn is forced to discard one and report back, revealing itself.</p>
+
+        <h3>Why the whole path is not knowable from one place</h3>
+        <p>Route knowledge is distributed and only <em>roughly</em> in sync, maintained by routing protocols — BGP between Autonomous Systems, OSPF inside one. During reconvergence after a link failure, different routers can briefly hold contradictory views of the best path. The design tolerates this precisely because packets are independent and TTL bounds the damage.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> assuming a device should ARP for the destination it actually wants to reach.
+          <pre><code class="lang-text">laptop wants 93.184.215.14
+  ✗  ARP: "who has 93.184.215.14? tell 192.168.1.5"
+     → broadcast reaches only the local link
+     → nobody on this LAN owns that IP
+     → no reply, ever; the packet is never sent
+
+  ✓  destination is outside my subnet
+     → ARP for the DEFAULT GATEWAY's IP (192.168.1.1)
+     → frame: dst MAC = router, dst IP = 93.184.215.14</code></pre>
+          <p>Why it breaks: ARP is a <em>broadcast on the local link</em>, and the local link is the only place it can go. A machine on the far side of the internet cannot hear it and has no MAC address that means anything here. The fix is not a better ARP query — it is recognising that MAC addressing is always and only local. The IP header keeps naming the true destination; the Ethernet header names whoever is next. Every router then repeats this same "who's next?" question for its own next hop.</p>
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating "UDP is unreliable" as a warning label rather than a specification, and reaching for TCP by default in latency-sensitive systems. TCP's guarantees are not free — a lost packet stalls <em>everything behind it</em> in the stream (the receiver cannot deliver later data until the gap is filled) while the sender waits out a retransmission timeout. For a live video call that means the picture freezes to recover a frame nobody will care about by the time it arrives. UDP's "unreliability" is the correct behaviour there: drop it and move on.
+        </div>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> counting only the HTTP request when reasoning about page-load latency. Before the first byte of <code>GET /</code> leaves the machine, a cold load has already paid for a DNS lookup, a TCP three-way handshake, and a TLS handshake — several full round trips, each one bounded by the speed of light and the distance to the server. This is why connection reuse (keep-alive), DNS caching, and putting content physically closer to users are such large wins: they remove round trips, not bytes.
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../osi-model/index.html" data-entry="osi-model">
+        <strong>OSI 7-Layer Model</strong>
+        <span>Formalises the nesting seen in Act 3 into named layers, and sharpens the L2-vs-L3 (switch-vs-router) distinction that the MAC/IP split hints at.</span>
+      </a>
+      <a class="related-card" href="../tcp-ip-model/index.html" data-entry="tcp-ip-model">
+        <strong>TCP/IP Model</strong>
+        <span>The stack the journey above actually runs on, and where TLS and sockets really sit — plus why IP is the narrow waist everything else is built around.</span>
+      </a>
+      <a class="related-card" href="../encapsulation-decapsulation/index.html" data-entry="encapsulation-decapsulation">
+        <strong>Encapsulation &amp; Decapsulation</strong>
+        <span>Zooms into Acts 3 and 6: which header fields are load-bearing, how each layer knows what is inside it, and why a router must re-encapsulate at every hop.</span>
+      </a>
+      <a class="related-card" href="../arp/index.html" data-entry="arp">
+        <strong>ARP — Resolving IP to MAC</strong>
+        <span>All of Act 2 in detail: the broadcast/unicast exchange, the ARP cache, next-hop-only resolution, and how spoofing this step enables a man-in-the-middle.</span>
+      </a>
+      <a class="related-card" href="../ethernet/index.html" data-entry="ethernet">
+        <strong>Ethernet — Frames, MAC Addresses &amp; EtherType</strong>
+        <span>The outermost wrapper from Act 3, taken apart: what a 48-bit MAC actually encodes, the frame layout, and the 1500-byte MTU that caps packet size.</span>
+      </a>
+      <a class="related-card" href="../bandwidth-throughput-latency-jitter/index.html" data-entry="bandwidth-throughput-latency-jitter">
+        <strong>Bandwidth vs Throughput vs Latency vs Jitter</strong>
+        <span>Makes "round trips are expensive" precise, and explains exactly when the TCP-versus-UDP trade-off tips toward speed over guarantees.</span>
+      </a>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">The laptop wants to reach a server at <code>93.184.215.14</code>. Why does it ARP for the <em>router's</em> MAC address rather than the server's?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Because the server's MAC address is kept private for security reasons.</button>
+            <button class="option" data-correct="true">Because a device can only physically talk to others on its own local link. The server is not reachable directly, so the laptop addresses the frame to its gateway and trusts routers to relay it onward — MAC addressing is always local.</button>
+            <button class="option" data-correct="false">Because ARP only works for addresses inside the 192.168.x.x private range.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">ARP is a broadcast on the local link, so it can only ever resolve something on that link. The destination IP stays in the IP header as the end-to-end plan; the MAC header just names whoever is next.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What guarantees does the network in the middle make about delivering your packets, and who actually provides reliability?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Routers guarantee in-order delivery and retransmit any packet they fail to forward.</button>
+            <button class="option" data-correct="false">IP guarantees delivery but not ordering; TCP only adds encryption on top.</button>
+            <button class="option" data-correct="true">None — the middle is best-effort and may drop, duplicate, or reorder packets. TCP, running only on the two endpoint machines, detects loss and retransmits to create the illusion of a reliable ordered stream.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Smart edges, dumb middle: routers forward and forget. Every reliability guarantee an application enjoys is manufactured by kernel software on the two endpoints.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A colleague argues that UDP must be "a different kind of thing" from TCP because TCP does so much more. Using the raw-IP framing, explain what UDP and TCP each add to IP — and what would change for a video call if it switched from UDP to TCP.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>They are the same kind of thing: both are transport-layer protocols, both implemented as kernel software on the endpoints (never on routers), both using port numbers to identify the destination application. The difference is only in what they add on top of IP's unreliable best-effort delivery. <strong>UDP adds almost nothing</strong> — essentially just ports — so the network's native "no promises" behaviour is exposed directly to the app. <strong>TCP adds a reliability machine</strong>: sequence numbers, acknowledgments, retransmission, reordering, and flow control, hiding the unreliability behind an ordered stream.</p>
+            <p>Switching a video call to TCP would trade latency for fidelity in the wrong direction. A dropped packet would no longer be simply skipped; TCP would stall delivery of everything behind it while it waited out a retransmission timeout and re-sent the missing data. The result is a frozen picture in order to recover a frame that is already stale by the time it arrives. For real-time media, a slightly-degraded frame <em>now</em> beats a perfect frame 200 ms <em>late</em>.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at this calibration, harmless) ─────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (the six acts of one HTTPS request) ──
+    const steps = [
+      { activate: ['#node-laptop', '#node-dns', '#msg-dns-q', '#msg-dns-r'],
+        explanation: 'Act 1 — Name resolution. Machines route by IP address, not by name, so nothing can happen until "example.com" becomes 93.184.215.14. The laptop asks a DNS resolver; on a cache miss the resolver walks root → .com → the authoritative server. The answer is cached for its TTL, so the next lookup is instant. This runs over UDP and before any connection to the web server exists.' },
+      { activate: ['#node-laptop', '#node-gw', '#msg-arp-q', '#msg-arp-r'],
+        explanation: 'Act 2 — Leaving the local network. The destination is not on the laptop’s subnet, and a device can only physically talk to others on its own link. So the packet goes to the default gateway. The laptop knows the gateway’s IP but needs its MAC to build a frame, so it ARPs for it. Note what it never asks for: the server’s MAC, which is unreachable and meaningless here.' },
+      { activate: ['#node-laptop', '#g-encap'],
+        explanation: 'Act 3 — Encapsulation. The request is wrapped outward, each layer adding one header for its own job: HTTP writes "GET /", TLS encrypts it, TCP marks it for port 443 and reliable ordered delivery, IP writes the end-to-end source and destination, and Ethernet writes the MAC pair for this one hop. Every layer treats what is inside as opaque cargo.' },
+      { activate: ['#node-laptop', '#node-server', '#msg-syn', '#msg-synack', '#msg-ack'],
+        explanation: 'Act 4a — TCP three-way handshake. Reliability requires both sides to agree they are talking before any data moves. SYN proposes a starting sequence number, SYN-ACK acknowledges it and proposes the server’s own, ACK confirms. One full round trip has now been spent and no content has been requested yet.' },
+      { activate: ['#node-laptop', '#node-server', '#msg-tls'],
+        explanation: 'Act 4b — TLS handshake. Because the scheme is https, the server must prove its identity with a certificate signed by a trusted authority, and both sides derive a shared secret key. Only after this does the browser send an encrypted GET. This stacking of round trips before the first byte of content is why latency dominates page load.' },
+      { activate: ['#msg-get', '#node-core', '#note-routing'],
+        explanation: 'Act 5 — Crossing the internet. The request enters roughly 75,000 independently operated networks that agree to pass each other’s traffic. At every router the same tiny decision repeats: read the destination IP, look up the best next neighbour, rewrite the link-layer header for that hop, decrement TTL, forward. The IP addresses never change; the MAC addresses change every hop. No router knows the whole path.' },
+      { activate: ['#node-server', '#note-server'],
+        explanation: 'Act 6a — Arrival and decapsulation. At the server (often a load balancer or edge cache first) everything unwraps in reverse: the Ethernet header is stripped, the IP header checked, the TCP segment matched to the right connection, TLS decrypted, and only then is the HTTP request finally read.' },
+      { activate: ['#node-server', '#msg-resp', '#node-laptop', '#note-render'],
+        explanation: 'Act 6b — The return trip. The response runs the whole machine backwards: HTTP → TLS → TCP → IP with source and destination swapped → Ethernet, back through the routers along a possibly different path. The laptop decapsulates, TCP puts any out-of-order packets back in sequence, TLS decrypts, and the browser renders. The HTML then references more resources, triggering dozens more journeys — most reusing this already-open connection.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'osi-model': { title: 'OSI 7-Layer Model — What Each Layer Does and Why the Split Exists', summary: 'The seven layers and why layering exists; PDUs, the L2-vs-L3 (switch-vs-router) distinction, OSI-vs-TCP/IP reality check, and the L2/L3/L4/L7 vocabulary.' },
+      'tcp-ip-model': { title: 'TCP/IP Model — How the 4/5-Layer Model Maps to Reality vs OSI', summary: 'The real stack the internet runs on: 4- vs 5-layer, the OSI→TCP/IP mapping, where TLS/sockets sit, and the hourglass/narrow-waist model.' },
+      'encapsulation-decapsulation': { title: 'Encapsulation & Decapsulation — Segments → Packets → Frames → Bits', summary: 'Dolls-in-dolls header wrapping/unwrapping: PDU names, load-bearing header fields, demultiplexing pointers, router re-encap per hop, and header overhead.' },
+      'bandwidth-throughput-latency-jitter': { title: 'Bandwidth vs Throughput vs Latency vs Jitter', summary: 'The four performance words precisely: rates vs times, the highway model, bandwidth≠speed, latency-bound vs bandwidth-bound, BDP, and jitter/QoS.' },
+      'ethernet': { title: 'Ethernet — Frame Format, MAC Addresses & EtherType', summary: 'The L2 reality: 48-bit MACs (OUI + device, broadcast/unicast/multicast), the frame format, EtherType demux, FCS best-effort error detection, and the 1500-byte MTU.' },
+      'arp': { title: 'ARP — Resolving IP → MAC, ARP Cache, Gratuitous ARP', summary: 'The glue between IP and MAC: broadcast request / unicast reply, next-hop-only resolution, caching, gratuitous ARP for failover, and why ARP spoofing enables MITM.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>
