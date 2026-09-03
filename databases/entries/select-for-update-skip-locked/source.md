@@ -5,7 +5,7 @@ topic: databases
 bloom-level: some
 created: 2026-08-15
 updated: 2026-08-24
-published: null
+published: 2026-09-03
 related: [two-phase-locking, deadlocks, isolation-levels, mvcc, advisory-locks, optimistic-vs-pessimistic-locking, sql-fundamentals]
 tags: [transactions, select-for-update, skip-locked, nowait, row-level-lock, for-share, for-key-share, for-no-key-update, job-queue, work-queue, lost-update, read-modify-write, evalplanqual, read-committed, repeatable-read, 40001, pessimistic-locking, interview-priority]
 sources:

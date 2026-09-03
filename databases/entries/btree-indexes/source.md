@@ -6,7 +6,7 @@ bloom-level: some
 created: 2026-05-31
 updated: 2026-09-01
 published: 2026-06-09
-related: [denormalization, relational-data-model, schema-design-normalization, composite-indexes, partial-and-expression-indexes, sql-fundamentals, window-functions, join-algorithms, query-planning, explain-analyze]
+related: [denormalization, relational-data-model, schema-design-normalization, composite-indexes, partial-and-expression-indexes, sql-fundamentals, window-functions, join-algorithms, query-planning, explain-analyze, statistics-cardinality]
 tags: [indexes, b-tree, b+tree, query-performance, sequential-scan, range-query, expression-index, disk-io, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — B-Tree Indexes"

@@ -4,9 +4,9 @@ title: Partial & Expression Indexes
 topic: databases
 bloom-level: some
 created: 2026-06-06
-updated: 2026-06-06
+updated: 2026-09-01
 published: 2026-06-09
-related: [btree-indexes, covering-indexes, composite-indexes, clustered-vs-nonclustered-indexes]
+related: [btree-indexes, covering-indexes, composite-indexes, clustered-vs-nonclustered-indexes, statistics-cardinality]
 tags: [indexes, partial-index, expression-index, functional-index, unique-constraint, soft-delete, case-insensitive, write-tax, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — Partial Indexes"

@@ -4,9 +4,9 @@ title: Clustered vs Non-clustered Indexes
 topic: databases
 bloom-level: some
 created: 2026-06-06
-updated: 2026-08-24
+updated: 2026-09-01
 published: 2026-06-09
-related: [covering-indexes, btree-indexes, composite-indexes, join-algorithms]
+related: [covering-indexes, btree-indexes, composite-indexes, join-algorithms, statistics-cardinality]
 tags: [indexes, clustered-index, non-clustered-index, secondary-index, index-organized-table, heap, clustering-factor, innodb, postgres-cluster, uuid, interview-priority]
 sources:
   - title: "Wikipedia — Database index"

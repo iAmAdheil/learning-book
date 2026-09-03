@@ -1,0 +1,558 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Query Planning &amp; Optimization — How the Database Picks a Plan — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Local styling for the pipeline SVG's extra vocabulary (path cards, winner path) */
+    .diagram-svg .path-card-rect { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.2; transition: opacity 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .path-card-rect.winner-rect { stroke: var(--good); stroke-width: 2; }
+    .diagram-svg .path-sub { fill: var(--text-muted); font-family: var(--font); font-size: 10px; }
+    .diagram-svg .winner-path { stroke: var(--good); stroke-width: 2.5; fill: none; }
+    .diagram-svg .fan-label { fill: var(--text-muted); font-family: var(--font); font-size: 11px; font-style: italic; }
+
+    /* Local table styling (cost constants, failure modes, what-you-control) */
+    .pt-table { width: 100%; border-collapse: collapse; margin: 0.85rem 0 1.25rem; font-size: 0.88rem; }
+    .pt-table th, .pt-table td { border: 1px solid var(--border); padding: 0.5rem 0.7rem; text-align: left; vertical-align: top; }
+    .pt-table th { background: var(--surface-elev); }
+    .pt-table code { white-space: nowrap; }
+    .pt-flag-common { color: var(--bad); font-weight: 600; }
+    .pt-flag-rare { color: var(--text-muted); }
+
+    /* Local cost-comparison widget (startup vs total cost, LIMIT flip) */
+    .cost-compare { margin: 1.25rem 0; padding: 1rem 1.1rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-elev); }
+    .cost-compare-caption { margin: 0 0 0.9rem; font-size: 0.88rem; color: var(--text-muted); }
+    .cost-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 0.6rem; }
+    .cost-label { flex: 0 0 auto; width: 150px; font-size: 0.85rem; }
+    .cost-bar-track { position: relative; flex: 1 1 auto; height: 18px; background: var(--surface); border: 1px solid var(--border); border-radius: 4px; overflow: visible; }
+    .cost-bar-fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--border); border-radius: 3px; transition: background 250ms ease; }
+    .cost-bar-tick { position: absolute; top: -3px; bottom: -3px; width: 3px; background: var(--accent); border-radius: 1px; }
+    .cost-numbers { flex: 0 0 auto; width: 128px; font-family: var(--mono); font-size: 0.75rem; color: var(--text-muted); text-align: right; }
+    .cost-row.winner .cost-bar-fill { background: var(--good); }
+    .cost-row.winner .cost-label { color: var(--good); font-weight: 600; }
+    .cost-toggle-row { display: flex; align-items: center; gap: 0.9rem; margin-top: 0.9rem; flex-wrap: wrap; }
+    .cost-verdict { margin: 0; font-size: 0.85rem; color: var(--text-muted); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Query Planning &amp; Optimization — How the Database Picks a Plan</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">The query planner is the part of a relational database that turns a declarative SQL statement — which says only <strong>what</strong> rows you want — into one specific, executable strategy for getting them, chosen from many that would all produce the same result. It behaves like a search engine with a cost function: it estimates a price for every candidate strategy from statistics gathered earlier, then runs the cheapest one it finds, which is not the same thing as the fastest one.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">query-planner</span>
+        <span class="badge tag">cost-based-optimizer</span>
+        <span class="badge tag">parser</span>
+        <span class="badge tag">rewrite-system</span>
+        <span class="badge tag">path-vs-plan</span>
+        <span class="badge tag">plan-tree</span>
+        <span class="badge tag">cost-model</span>
+        <span class="badge tag">startup-cost</span>
+        <span class="badge tag">cardinality</span>
+        <span class="badge tag">geqo</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-31 · Updated 2026-09-03</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Query tree</dt>
+        <dd>The parser's output: a syntax-checked internal form of the statement, with table and column names resolved. No decision about performance exists yet — the parser only confirms the query is well-formed.</dd>
+
+        <dt>Path</dt>
+        <dd>A lightweight candidate strategy for producing part of the result — for example, "scan <code>transactions</code> via <code>idx_txn_merchant</code>, in merchant order, cost 0.29..842.11." The planner generates and costs many paths per table and per join, before building anything executable.</dd>
+
+        <dt>Plan (plan tree)</dt>
+        <dd>The single, fully expanded, executable tree built from the one path the planner judged cheapest. This — not the path — is what the executor actually walks.</dd>
+
+        <dt>Cost (startup / total)</dt>
+        <dd>A path's price, in an abstract unit anchored on one sequential page read. It is always a pair — <strong>startup cost</strong> (before the first row can be returned) and <strong>total cost</strong> (to return every row) — never a single number, and it does not convert to milliseconds.</dd>
+
+        <dt>Cardinality estimate</dt>
+        <dd>The planner's predicted row count for a step, read from statistics gathered earlier by <code>ANALYZE</code>. Every cost figure is arithmetic on top of this one number, so an error here propagates through the whole plan.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Here is a single line of <code>EXPLAIN</code> output, annotated field by field. Every term from Key Components becomes visible in it at once:</p>
+      <pre><code class="lang-text">Index Scan using idx_txn_merchant on transactions t
+  (cost=0.29..842.11 rows=1200 width=64)
+        ^^^^  ^^^^^^      ^^^^       ^^
+        |     |           |          average row size in bytes
+        |     |           ESTIMATED row count  &lt;-- the number that matters
+        |     total cost (all rows)
+        startup cost (before the first row)</code></pre>
+      <p><code>Index Scan using idx_txn_merchant</code> names the winning <strong>path's</strong> node type and access method — one candidate among however many the planner priced for this table. <code>cost=0.29..842.11</code> is the startup/total pair: 0.29 units before the first row streams out, 842.11 units to stream all of them. And <code>rows=1200</code> is the <strong>cardinality estimate</strong> that produced both cost numbers — the planner pulled that figure from statistics gathered offline, in <code>pg_class</code> (row and page counts) and <code>pg_stats</code> (per-column value distributions), not from running the query. Whether this plan looks cheap, and whether a join built on top of it looks cheap, is arithmetic on top of that one guess.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of the planner as a travel-booking search engine, not a fixed timetable. Given "get me from A to B," it does not look up one official route — it drafts several candidate itineraries (paths), attaches a price to each from a schedule it trusts but did not verify today (statistics), and books whichever itinerary that schedule says is cheapest. If the schedule is stale, the booking can be confidently wrong.</p>
+      <p>Step through the pipeline a query actually travels, from raw text to rows, and watch where the searching happens.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 820 300" aria-label="The path of a query: parser, rewrite system, planner (paths costed and the cheapest expanded), and executor, from SQL text to rows">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- SQL text -->
+          <g id="node-sql" class="step-el">
+            <rect x="10" y="132" width="90" height="40" rx="20" class="node-rect" />
+            <text x="55" y="157" text-anchor="middle" class="node-text">SQL text</text>
+          </g>
+          <line id="edge-0" class="step-el edge-line" x1="100" y1="152" x2="136" y2="152" marker-end="url(#arrow)" />
+
+          <!-- Parser -->
+          <g id="node-parser" class="step-el">
+            <rect x="140" y="120" width="110" height="64" rx="8" class="node-rect" />
+            <text x="195" y="146" text-anchor="middle" class="node-text">Parser</text>
+            <text x="195" y="164" text-anchor="middle" class="label-text">syntax + name check</text>
+          </g>
+          <text x="280" y="105" text-anchor="middle" class="label-text">query tree</text>
+          <line id="edge-1" class="step-el edge-line" x1="250" y1="152" x2="306" y2="152" marker-end="url(#arrow)" />
+
+          <!-- Rewrite system -->
+          <g id="node-rewrite" class="step-el">
+            <rect x="310" y="120" width="130" height="64" rx="8" class="node-rect" />
+            <text x="375" y="146" text-anchor="middle" class="node-text">Rewrite System</text>
+            <text x="375" y="164" text-anchor="middle" class="label-text">views, rules, RLS</text>
+          </g>
+          <text x="460" y="105" text-anchor="middle" class="label-text">query tree′</text>
+          <line id="edge-2" class="step-el edge-line" x1="440" y1="152" x2="476" y2="152" marker-end="url(#arrow)" />
+
+          <!-- Planner -->
+          <g id="node-planner" class="step-el">
+            <rect x="480" y="120" width="110" height="64" rx="8" class="node-rect" />
+            <text x="535" y="146" text-anchor="middle" class="node-text">Planner</text>
+            <text x="535" y="164" text-anchor="middle" class="label-text">paths → plan</text>
+          </g>
+
+          <!-- Candidate path cards (fan-out under Planner) -->
+          <text id="paths-label" class="step-el fan-label" x="480" y="198">candidate paths (cheap sketches, all costed):</text>
+          <g id="path-card-1" class="step-el">
+            <rect x="480" y="204" width="210" height="20" rx="4" class="path-card-rect" />
+            <text x="490" y="218" class="path-sub">scan A · cost 12.50..340.90</text>
+          </g>
+          <g id="path-card-2" class="step-el">
+            <rect x="480" y="228" width="210" height="20" rx="4" class="path-card-rect" />
+            <text x="490" y="242" class="path-sub">scan B · cost 8.20..905.44</text>
+          </g>
+          <g id="path-card-3" class="step-el">
+            <rect x="480" y="252" width="210" height="20" rx="4" class="path-card-rect winner-rect" />
+            <text x="490" y="266" class="path-sub">scan C · cost 0.29..288.11 ✓ cheapest</text>
+          </g>
+          <path id="path-line-winner" class="step-el winner-path" d="M 690 262 Q 645 210 590 152" marker-end="url(#arrow)" />
+
+          <text x="620" y="105" text-anchor="middle" class="label-text">plan tree</text>
+          <line id="edge-3" class="step-el edge-line" x1="590" y1="152" x2="646" y2="152" marker-end="url(#arrow)" />
+
+          <!-- Executor -->
+          <g id="node-executor" class="step-el">
+            <rect x="650" y="120" width="110" height="64" rx="8" class="node-rect" />
+            <text x="705" y="146" text-anchor="middle" class="node-text">Executor</text>
+            <text x="705" y="164" text-anchor="middle" class="label-text">walks the plan tree</text>
+          </g>
+          <line id="edge-4" class="step-el edge-line" x1="760" y1="152" x2="800" y2="152" marker-end="url(#arrow)" />
+          <text id="rows-label" class="step-el node-text" x="805" y="157">rows</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>Startup cost and total cost pull in opposite directions, and that tension alone decides plans in surprising ways. A sort or a hash build must finish completely before it emits a single row, so both carry a high startup cost. A nested loop over an index scan streams — near-zero startup. Toggle the query below to see how a <code>LIMIT</code> flips which one wins, using the exact <code>cost=0.29..842.11</code> path from the Concrete Example above against a second candidate plan.</p>
+
+      <div class="cost-compare" id="cost-compare">
+        <p class="cost-compare-caption">Same query, two costed candidate plans. Toggling <code>LIMIT 10</code> changes which number the planner compares first.</p>
+        <div class="cost-row" data-plan="a">
+          <span class="cost-label">Index Scan (Nested Loop)</span>
+          <div class="cost-bar-track">
+            <div class="cost-bar-fill" style="width:100%"></div>
+            <div class="cost-bar-tick" style="left:0.3%" title="startup cost 0.29"></div>
+          </div>
+          <span class="cost-numbers">cost=0.29..842.11</span>
+        </div>
+        <div class="cost-row" data-plan="b">
+          <span class="cost-label">Hash Join</span>
+          <div class="cost-bar-track">
+            <div class="cost-bar-fill" style="width:80.8%"></div>
+            <div class="cost-bar-tick" style="left:73.6%" title="startup cost 620.00"></div>
+          </div>
+          <span class="cost-numbers">cost=620.00..680.00</span>
+        </div>
+        <div class="cost-toggle-row">
+          <button class="step-btn primary" id="cost-toggle-btn">Add LIMIT 10</button>
+          <p class="cost-verdict" id="cost-verdict">Loading…</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Where the numbers actually come from</h3>
+        <p>Every cost is roughly <code>rows × per-row-cost + pages × per-page-cost</code>, using five constants, all in the same abstract unit:</p>
+        <table class="pt-table">
+          <thead><tr><th>Constant</th><th>Default</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>seq_page_cost</code></td><td>1.0</td><td>cost of a disk page fetched as part of a sequential series</td></tr>
+            <tr><td><code>random_page_cost</code></td><td>4.0</td><td>cost of a non-sequentially-fetched disk page</td></tr>
+            <tr><td><code>cpu_tuple_cost</code></td><td>0.01</td><td>cost of processing one row</td></tr>
+            <tr><td><code>cpu_index_tuple_cost</code></td><td>0.005</td><td>cost of processing one index entry</td></tr>
+            <tr><td><code>cpu_operator_cost</code></td><td>0.0025</td><td>cost of one operator or function call</td></tr>
+          </tbody>
+        </table>
+        <p>The 4:1 ratio of <code>random_page_cost</code> to <code>seq_page_cost</code> describes a spinning disk. On SSDs that penalty is too high and makes index scans look artificially expensive; lowering <code>random_page_cost</code> toward 1.1 is the standard correction. The row counts these constants multiply against come from <code>pg_class.reltuples</code>/<code>relpages</code> and <code>pg_statistic</code> (readable via <code>pg_stats</code>) — both populated only by <code>ANALYZE</code> and <code>VACUUM</code>, so they are a sampled snapshot, always somewhat out of date, and approximate even the moment after they're refreshed.</p>
+
+        <h3>The search space explodes — and how the planner survives it</h3>
+        <p>Join orderings alone number N-factorial for N tables, before an algorithm is even chosen for each join. Postgres uses the System R approach (Selinger et al., 1979): build up <strong>bottom-up</strong>, computing the best plan for every subset of relations of size 1, then 2, then 3, reusing smaller answers — dynamic programming, on the assumption that the best plan for a large set is built from the best plans for its subsets. It also prunes hard: a join between two relations with no matching <code>WHERE</code>/<code>ON</code> clause is considered only when there is no other choice, which is why the planner rarely produces an accidental Cartesian product.</p>
+        <p>Past <code>geqo_threshold</code> relations (default <strong>12</strong>), this near-exhaustive search is abandoned in favor of <strong>GEQO</strong>, a genetic algorithm. GEQO is randomized — a very wide join can plan differently between runs with identical statistics. If a 15-way join has performance that varies for no visible reason, this is the first thing to check.</p>
+
+        <h3>Planning itself is not free</h3>
+        <p>For a short, well-indexed query, planning can genuinely cost more than execution. This is what prepared statements address: the first several executions build a <strong>custom plan</strong> from the real parameter values, then Postgres compares its average cost against a <strong>generic plan</strong> built without knowing the values, and switches if the generic plan is not more expensive. <code>plan_cache_mode</code> can force either behavior. The trade-off is real: a generic plan skips per-call planning cost but cannot adapt to skewed parameters — a value present in 0.01% of rows and one present in 60% of rows want different plans, and a generic plan serves one of them badly.</p>
+
+        <h3>What the planner cannot do</h3>
+        <ul>
+          <li><strong>Create an index.</strong> If no useful access path exists, the cheapest plan is still a sequential scan.</li>
+          <li><strong>See correlation between columns.</strong> It assumes independence, so <code>WHERE city='Mumbai' AND state='Maharashtra'</code> is estimated as the <em>product</em> of the two selectivities — badly underestimating when the columns are correlated. <code>CREATE STATISTICS</code> exists specifically to fix this.</li>
+          <li><strong>See through opaque expressions.</strong> <code>WHERE lower(email) = 'x'</code> gives it no distribution to read, so it falls back to a hardcoded default guess. An expression index restores both the access path and the statistics.</li>
+          <li><strong>See through <code>VOLATILE</code> functions.</strong> It must re-evaluate them per row rather than folding or caching.</li>
+          <li><strong>Learn from being wrong.</strong> It has no feedback loop — the same stale statistics produce the same mistake, run after run, until <code>ANALYZE</code> executes.</li>
+        </ul>
+
+        <h3>Two failure modes, one diagnostic order</h3>
+        <table class="pt-table">
+          <thead><tr><th></th><th>Bad cardinality estimate</th><th>Bad cost model</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Symptom</strong></td><td><code>EXPLAIN ANALYZE</code> shows a large estimated-vs-actual row gap</td><td>estimates are accurate but the plan is still poor</td></tr>
+            <tr><td><strong>Typical cause</strong></td><td>stale <code>ANALYZE</code>, correlated columns, opaque expressions</td><td><code>random_page_cost</code> wrong for the hardware, <code>work_mem</code> too small</td></tr>
+            <tr><td><strong>Fix</strong></td><td><code>ANALYZE</code>, <code>CREATE STATISTICS</code>, expression index, raise the statistics target</td><td>tune the cost constants or the memory settings</td></tr>
+            <tr><td><strong>Frequency</strong></td><td class="pt-flag-common">the overwhelming majority</td><td class="pt-flag-rare">uncommon</td></tr>
+          </tbody>
+        </table>
+        <p>Check the estimate gap first, every time: when a plan goes wrong, the plan is rarely the bug — trace back to the estimate that produced it.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> setting an <code>enable_*</code> switch (<code>enable_seqscan</code>, <code>enable_nestloop</code>, <code>enable_hashjoin</code>, …) permanently in application or database configuration to "fix" a bad plan.
+          <pre><code class="lang-sql">-- DON'T: bake this into a migration or startup config
+ALTER DATABASE mydb SET enable_seqscan = off;</code></pre>
+          <p>Why it breaks: these switches add a large fixed cost penalty to discourage a plan type — they do not remove it from consideration, so a sufficiently bad alternative can still produce a sequential scan anyway. And the penalty now biases <em>every</em> query on that connection, including the ones where a sequential scan is genuinely the right choice (small tables, or a query that needs most of the table). They are diagnostics: flip one off in a session, re-run <code>EXPLAIN</code>, and read the planner's second-choice cost to see how close the original decision was. If a plan is wrong, the real fix is almost always a missing index or a stale statistic, not a disabled plan type.</p>
+        </div>
+
+        <h3>What you actually control</h3>
+        <table class="pt-table">
+          <thead><tr><th>Lever</th><th>What it changes</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Indexes</strong></td><td>which paths exist at all — the largest lever by far</td></tr>
+            <tr><td><strong><code>ANALYZE</code> / autovacuum tuning</strong></td><td>accuracy of the estimates driving every decision</td></tr>
+            <tr><td><strong><code>CREATE STATISTICS</code></strong></td><td>fixes the column-independence assumption for correlated columns</td></tr>
+            <tr><td><strong><code>ALTER TABLE ... SET STATISTICS</code></strong></td><td>more histogram detail on one skewed column</td></tr>
+            <tr><td><strong><code>random_page_cost</code></strong></td><td>corrects the cost model for SSDs</td></tr>
+            <tr><td><strong><code>work_mem</code></strong></td><td>whether hash joins and sorts stay in memory</td></tr>
+            <tr><td><strong>Query shape</strong></td><td>far less than people think — see the rewrites below</td></tr>
+          </tbody>
+        </table>
+
+        <h3>What the planner already does for you</h3>
+        <p>Before costing anything, Postgres applies view expansion, subquery flattening, predicate pushdown, constant folding, join reordering, non-recursive CTE inlining, and <code>IN</code>-to-semi-join conversion — normalizing most "smarter" query shapes to the same internal form anyway. Time spent hand-reordering joins or rewriting <code>IN</code> as <code>EXISTS</code> for speed is usually time not spent on the index or the statistic that would actually matter.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../sql-fundamentals/index.html" data-entry="sql-fundamentals">
+        <strong>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</strong>
+        <span>SQL's declarative "what, not how" model established there is exactly the gap the planner exists to close.</span>
+      </a>
+      <a class="related-card" href="../join-algorithms/index.html" data-entry="join-algorithms">
+        <strong>Join Algorithms — Nested Loop, Hash Join &amp; Merge Join</strong>
+        <span>The planner's search over paths is the process that chooses among nested loop, hash join, and merge join for every join in the plan.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</strong>
+        <span>Indexes are the access paths the planner can choose among; without one, the cheapest available path is still a sequential scan.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>Column order changes which access paths exist at all, directly feeding the set of paths the planner has to cost.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>An index-only scan is a lower-cost path type the planner favors whenever the visibility map lets it skip the heap fetch.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>The <code>seq_page_cost</code> / <code>random_page_cost</code> split the planner costs with only makes full sense once you know which pages are already resident in <code>shared_buffers</code>.</span>
+      </a>
+      <a class="related-card" href="../window-functions/index.html" data-entry="window-functions">
+        <strong>Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions &amp; Frames</strong>
+        <span>Window functions get their own executor node in the plan tree, added after the planner has settled the rest of the query.</span>
+      </a>
+      <a class="related-card" href="../explain-analyze/index.html" data-entry="explain-analyze">
+        <strong>EXPLAIN &amp; EXPLAIN ANALYZE — Reading Query Plans in Practice</strong>
+        <span>The tool that exposes exactly where a planner's cardinality estimate diverged from what actually happened.</span>
+      </a>
+
+      <p>Statistics &amp; Cardinality Estimation — the mechanics behind how the sampled data in <code>pg_stats</code> becomes the selectivity fraction this entry treats as a given input — is next in this sequence and not yet published.</p>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/query-path.html" target="_blank" rel="noopener">PostgreSQL Documentation — 52.1. The Path of a Query</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/planner-optimizer.html" target="_blank" rel="noopener">PostgreSQL Documentation — 52.5. Planner/Optimizer</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/planner-stats.html" target="_blank" rel="noopener">PostgreSQL Documentation — 14.2. Statistics Used by the Planner</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/geqo-intro.html" target="_blank" rel="noopener">PostgreSQL Documentation — 61.1. Query Handling as a Complex Optimization Problem (GEQO)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/runtime-config-query.html" target="_blank" rel="noopener">PostgreSQL Documentation — 20.7. Query Planning (cost constants)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A plan costs <code>0.29..842.11</code>. Adding <code>LIMIT 10</code> to the same query makes the planner switch to a plan with a worse total cost. Why would that ever be the right choice?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">It isn't the right choice — <code>LIMIT</code> should never change which plan is cheapest.</button>
+            <button class="option" data-correct="true">A plan with cheap startup cost streams rows immediately, so with a small <code>LIMIT</code> its full total cost is never paid — beating a plan with a lower total but a high startup cost that must finish building (a sort or hash) before returning anything.</button>
+            <button class="option" data-correct="false">Postgres re-runs <code>ANALYZE</code> automatically whenever it sees a <code>LIMIT</code> clause, producing a fresh estimate.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>LIMIT</code> shifts the comparison from total cost to startup cost, because most of the losing plan's total cost is work spent on rows that are never requested.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">True or false: querying a plain (non-materialized) view is inherently slower than querying its base tables directly, because the view stores its own copy of the rows.</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">True</button>
+            <button class="option" data-correct="true">False</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A plain view stores nothing — the rewrite system inlines its definition into the query tree before the planner ever runs, so it carries no inherent cost of its own. Only a materialized view stores rows.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A query filters <code>WHERE city = 'Mumbai' AND state = 'Maharashtra'</code>. Almost every row with that city also has that state, but the planner assumes the two columns are independent. What happens to the resulting plan, and why?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Multiplying the two column selectivities under the independence assumption produces an estimate far below the true row count — a severe underestimate. A low estimated row count makes a nested loop look artificially cheap, so the planner is likely to pick one that then iterates far more times than expected: a small wrong estimate at a leaf cascading into a slow plan. <code>CREATE STATISTICS</code> on <code>(city, state)</code> fixes this by recording the real joint distribution instead of assuming independence.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at this calibration, kept for consistency) ─
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (DATA FLOW: path of a query) ──────────
+    const steps = [
+      { activate: ['#node-sql', '#edge-0'],
+        explanation: 'Raw SQL text enters the pipeline. Nothing about performance is decided at this point.' },
+      { activate: ['#node-parser'],
+        explanation: 'The parser checks only syntax and that the referenced tables and columns exist. Its output is a query tree — a faithful translation of the SQL, with zero cost decisions made.' },
+      { activate: ['#edge-1', '#node-rewrite'],
+        explanation: "The rewrite system applies stored rules to the query tree — most importantly, expanding any view reference into the view's own definition. A view is a substitution performed here, not a stored result." },
+      { activate: ['#edge-2', '#node-planner', '#paths-label', '#path-card-1', '#path-card-2', '#path-card-3'],
+        explanation: 'The planner enumerates many paths for the same rewritten query tree — cheap sketches like "scan via this index, in this order, costing so much." Each one is costed; none is expanded into a full plan yet.' },
+      { activate: ['#node-planner', '#path-card-3', '#path-line-winner'],
+        explanation: 'The single cheapest path is expanded into a complete, executable plan tree. The others are discarded — unless one carries a useful sort order that would save a sort later.' },
+      { activate: ['#edge-3', '#node-executor', '#edge-4', '#rows-label'],
+        explanation: 'The executor walks the plan tree, calling the storage layer, performing joins and sorts, and hands back rows. One plan, one pass, no more searching.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cost comparison toggle (startup vs total cost, LIMIT flip) ─
+    const costCompare = document.getElementById('cost-compare');
+    const costToggleBtn = document.getElementById('cost-toggle-btn');
+    const costVerdict = document.getElementById('cost-verdict');
+    let limitMode = false;
+
+    function updateCostCompare() {
+      const rowA = costCompare.querySelector('[data-plan="a"]');
+      const rowB = costCompare.querySelector('[data-plan="b"]');
+      rowA.classList.remove('winner');
+      rowB.classList.remove('winner');
+      if (limitMode) {
+        rowA.classList.add('winner');
+        costVerdict.textContent = 'LIMIT 10 requested: compare STARTUP cost. Index Scan wins (0.29 vs 620.00) — it streams rows immediately, so the rest of its own total cost is never paid.';
+        costToggleBtn.textContent = 'Remove LIMIT 10';
+      } else {
+        rowB.classList.add('winner');
+        costVerdict.textContent = 'Full result requested: compare TOTAL cost. Hash Join wins (680.00 < 842.11) — it must finish building before returning anything, but finishes cheaper overall.';
+        costToggleBtn.textContent = 'Add LIMIT 10';
+      }
+    }
+    costToggleBtn.addEventListener('click', () => { limitMode = !limitMode; updateCostCompare(); });
+    updateCostCompare();
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'sql-fundamentals': { title: 'SQL Fundamentals — Joins, Aggregations, Subqueries & CTEs', summary: "Logical evaluation order as the master key; the cross-product join model with the ON-vs-WHERE silent-inner-join and fan-out double-counting traps, LATERAL top-N; GROUP BY grain change, WHERE-vs-HAVING, aggregate NULL skipping and FILTER; the NOT IN NULL trap vs NOT EXISTS; and CTEs with the Postgres 12 inlining rule, the recursive working-table algorithm, and one-snapshot data-modifying CTEs." },
+      'join-algorithms': { title: 'Join Algorithms — Nested Loop, Hash Join & Merge Join', summary: 'Three answers to one lookup question: nested loop, hash join, and merge join; plus the row-estimate cliff, the enable_* switches as diagnostics, and geqo join ordering.' },
+      'btree-indexes': { title: 'B-tree Indexes — Structure & How Range/Equality Queries Use Them', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal, ORDER BY for free, and why f(column) defeats the index.' },
+      'composite-indexes': { title: 'Composite Indexes — Column Order & the Leftmost-Prefix Rule', summary: "The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans." },
+      'covering-indexes': { title: 'Covering Indexes & Index-Only Scans', summary: "Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres's visibility map / MVCC can still force heap access." },
+      'buffer-pool': { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+      'window-functions': { title: 'Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions & Frames', summary: "Aggregate without collapsing the row: why window functions can't appear in WHERE, tie behaviour and top-N-per-group, LAG/LEAD sessionization, and RANGE vs ROWS frames." },
+      'explain-analyze': { title: 'EXPLAIN & EXPLAIN ANALYZE — Reading Query Plans in Practice', summary: 'Reading intent against reality: node anatomy, cumulative costs, per-loop actual rows, the diagnostic order, and a worked plan traced to the fix.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

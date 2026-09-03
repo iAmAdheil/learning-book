@@ -177,7 +177,7 @@
     "path": "databases/entries/clustered-vs-nonclustered-indexes/index.html",
     "bloom": "some",
     "created": "2026-06-06",
-    "updated": "2026-08-24"
+    "updated": "2026-09-01"
   },
   {
     "id": "databases/partial-and-expression-indexes",
@@ -199,7 +199,7 @@
     "path": "databases/entries/partial-and-expression-indexes/index.html",
     "bloom": "some",
     "created": "2026-06-06",
-    "updated": "2026-06-06"
+    "updated": "2026-09-01"
   },
   {
     "id": "databases/acid-properties",
@@ -417,7 +417,7 @@
     "path": "databases/entries/table-bloat-and-autovacuum/index.html",
     "bloom": "some",
     "created": "2026-06-17",
-    "updated": "2026-06-30"
+    "updated": "2026-09-01"
   },
   {
     "id": "databases/write-ahead-log",
@@ -1200,6 +1200,52 @@
     ],
     "summary": "Reading intent against reality: the node anatomy, costs being cumulative upward and actual time/rows being per-loop averages that must be multiplied by loops, the diagnostic order (find the LOWEST node where estimated and actual rows diverge), the scan-node vocabulary including Bitmap Heap Scan and Heap Fetches, the BUFFERS/SETTINGS/GENERIC_PLAN options, and a worked plan traced from a 4000x top-level gap down to the composite index that actually fixes it.",
     "path": "databases/entries/explain-analyze/index.html",
+    "bloom": "some",
+    "created": "2026-09-01",
+    "updated": "2026-09-01"
+  },
+  {
+    "id": "databases/statistics-cardinality",
+    "title": "Statistics & Cardinality Estimation — Why Estimates Go Wrong",
+    "topic": "databases",
+    "slug": "statistics-cardinality",
+    "tags": [
+      "statistics",
+      "cardinality-estimation",
+      "selectivity",
+      "pg-stats",
+      "pg-statistic",
+      "analyze",
+      "autovacuum",
+      "null-frac",
+      "n-distinct",
+      "most-common-vals",
+      "most-common-freqs",
+      "histogram-bounds",
+      "correlation",
+      "clustering-factor",
+      "default-statistics-target",
+      "alter-table-set-statistics",
+      "sampling",
+      "random-sample",
+      "independence-assumption",
+      "correlated-columns",
+      "create-statistics",
+      "extended-statistics",
+      "functional-dependencies",
+      "mcv-list",
+      "ndistinct-statistics",
+      "expression-statistics",
+      "expression-index",
+      "join-selectivity",
+      "estimate-compounding",
+      "skew",
+      "data-skew",
+      "stale-statistics",
+      "interview-priority"
+    ],
+    "summary": "estimated rows = cardinality x selectivity, and the four formulas that produce selectivity (MCV lookup, the flat average for the non-MCV tail, histogram interpolation, and multiplication under independence); then the four failure modes — stale ANALYZE, correlated columns fixed by CREATE STATISTICS, opaque expressions fixed by expression indexes, and sampling resolution fixed by SET STATISTICS — plus why errors multiply upward through joins and why underestimates are the dangerous direction.",
+    "path": "databases/entries/statistics-cardinality/index.html",
     "bloom": "some",
     "created": "2026-09-01",
     "updated": "2026-09-01"

@@ -5,7 +5,7 @@ topic: databases
 bloom-level: some
 created: 2026-08-24
 updated: 2026-08-31
-published: null
+published: 2026-09-03
 related: [sql-fundamentals, relational-data-model, btree-indexes, composite-indexes, denormalization, heap-storage-layout, join-algorithms, query-planning]
 tags: [sql, window-function, over-clause, partition-by, order-by, frame-clause, rows-vs-range, groups-mode, default-frame, peer-group, unbounded-preceding, current-row, unbounded-following, exclude-current-row, row-number, rank, dense-rank, percent-rank, cume-dist, ntile, lag, lead, first-value, last-value, nth-value, running-total, moving-average, top-n-per-group, gaps-and-islands, sessionization, deduplication, named-window, distinct-on, percentile-cont, percentile-disc, logical-evaluation-order, qualify, interview-priority]
 sources:

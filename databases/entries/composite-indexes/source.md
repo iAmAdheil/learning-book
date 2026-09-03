@@ -6,7 +6,7 @@ bloom-level: some
 created: 2026-06-03
 updated: 2026-09-01
 published: 2026-06-09
-related: [btree-indexes, denormalization, relational-data-model, covering-indexes, sql-fundamentals, window-functions, join-algorithms, query-planning, explain-analyze]
+related: [btree-indexes, denormalization, relational-data-model, covering-indexes, sql-fundamentals, window-functions, join-algorithms, query-planning, explain-analyze, statistics-cardinality]
 tags: [indexes, composite-index, multicolumn-index, leftmost-prefix, column-order, equality-before-range, selectivity, bitmap-scan, skip-scan, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — Multicolumn Indexes"

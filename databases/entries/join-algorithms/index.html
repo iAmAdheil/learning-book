@@ -1,0 +1,649 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Join Algorithms — Nested Loop, Hash Join &amp; Merge Join — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Join Algorithms — Nested Loop, Hash Join &amp; Merge Join</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text"><code>JOIN</code> is a word in SQL. It names a <strong>result</strong> — which pairs of rows from two tables belong together. It says nothing about <em>how</em> to find them. Every relational database answers that question with one of exactly three physical algorithms — <strong>nested loop</strong>, <strong>hash join</strong>, and <strong>merge join</strong> — and the query planner's job is to pick the cheapest one for the data actually in front of it.</p>
+      <p class="hook-text">This is where the declarative half of SQL meets the physical half of the storage engine. B-tree indexes, the buffer pool, and heap pages matter here because the join algorithm decides which of those capabilities a given query actually uses — and it is the layer <code>EXPLAIN</code> reports on.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">nested-loop-join</span>
+        <span class="badge tag">hash-join</span>
+        <span class="badge tag">merge-join</span>
+        <span class="badge tag">query-planner</span>
+        <span class="badge tag">cost-based-optimizer</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-24 · Updated 2026-09-01</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components (Some calibration: definition list) -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Outer relation</dt>
+        <dd>The relation that drives the loop or the probe scan. It is scanned once, and it appears first — the upper node — in <code>EXPLAIN</code> output.</dd>
+
+        <dt>Inner relation</dt>
+        <dd>The relation searched for each outer row. A nested loop rescans it every time; a hash or merge join scans it exactly once instead.</dd>
+
+        <dt>Build phase / Probe phase</dt>
+        <dd>The two steps of a hash join. <strong>Build</strong> loads the smaller relation into an in-memory hash table on the join key. <strong>Probe</strong> scans the larger relation and looks up each row's key in that table.</dd>
+
+        <dt>Equijoin</dt>
+        <dd>A join condition that tests equality (<code>=</code>) on the join key. A hash table can only answer "which rows have exactly this key?", so hash join can only implement an equijoin — never a range condition.</dd>
+
+        <dt>Batches</dt>
+        <dd>The number of times a hash join must partition and reread its inputs when the build side does not fit into <code>work_mem × hash_mem_multiplier</code> (the hash table's memory budget). <code>Batches: 1</code> is healthy; a higher count means it spilled to disk.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>One query, three physical strategies. Take a recurring join: <code>transactions</code> to <code>merchants</code> on <code>merchant_id</code>. The logical result is identical under all three plans below — only the method of finding matches changes.</p>
+
+      <pre><code class="lang-text">Nested Loop
+  ->  Seq Scan on merchants m                          (N = 40 rows)
+  ->  Index Scan using idx_txn_merchant on transactions t
+        Index Cond: (merchant_id = m.merchant_id)</code></pre>
+      <p>The planner drives the loop from the small side — 40 merchant rows — and looks each one up through an index on the join key: a B-tree descent, not a table scan. That turns the naive O(N × M) cost into O(N × log M).</p>
+
+      <pre><code class="lang-text">Hash Join
+  Hash Cond: (t.merchant_id = m.merchant_id)
+  ->  Seq Scan on transactions t          -- probe side (large)
+  ->  Hash
+        ->  Seq Scan on merchants m       -- build side (small)</code></pre>
+      <p>Postgres always builds the in-memory hash table on the smaller side — here, merchants — then scans transactions once, hashing each row's key and looking it up. Each side is read exactly once: O(N + M).</p>
+
+      <pre><code class="lang-text">Merge Join
+  ->  Index Scan using merchants_pkey on merchants     -- free ordering
+  ->  Materialize
+        ->  Sort
+              Sort Key: t.merchant_id
+              ->  Seq Scan on transactions t</code></pre>
+      <p>Merchants already arrives in <code>merchant_id</code> order for free, straight off its primary-key index. Transactions does not, so the planner pays for an explicit <code>Sort</code> first. Once both sides are ordered, two cursors walk them in a single pass.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Computer science has three standard answers to any lookup problem: scan a list, build a hash map, or merge two sorted lists. A database engine uses all three. None is "the fast one" — each wins in a regime the others lose, and which one wins depends on the shape of the data, not any inherent superiority.</p>
+      <p>Pick an algorithm below and step through it. The same two small tables — <code>merchants</code> (101, 105, 108, 112) and <code>transactions</code> (101, 105, 105, 108, 112, 999) — run through all three, so the difference in mechanism is the only thing that changes.</p>
+
+      <div class="algo-tabs" style="display:flex; gap:0.5rem; margin-bottom:1rem; flex-wrap:wrap;">
+        <button class="step-btn primary algo-tab" data-algo="nl" aria-pressed="true">Nested Loop</button>
+        <button class="step-btn algo-tab" data-algo="hj" aria-pressed="false">Hash Join</button>
+        <button class="step-btn algo-tab" data-algo="mj" aria-pressed="false">Merge Join</button>
+      </div>
+
+      <!-- ── Nested Loop panel ── -->
+      <div class="visual-container" data-algo="nl">
+        <div class="step-info" aria-live="polite">Step <span class="step-num">1</span> of <span class="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 320" aria-label="Nested loop join: the outer relation merchants is scanned once; for every outer row the inner relation transactions is either fully rescanned, costing O(N times M), or looked up through a B-tree index in O(log M), so the total cost becomes O(N times log M)">
+          <text x="320" y="20" text-anchor="middle" class="label-text" font-weight="700" font-size="13">Nested Loop — outer scanned once, inner rescanned per outer row</text>
+
+          <text x="20" y="46" class="label-text">OUTER — merchants (driving relation, scanned once)</text>
+          <g id="nl-outer0" class="step-el"><rect x="20" y="54" width="70" height="32" rx="6" class="node-rect" /><text x="55" y="75" text-anchor="middle" class="node-text">101</text></g>
+          <g id="nl-outer1" class="step-el"><rect x="96" y="54" width="70" height="32" rx="6" class="node-rect" /><text x="131" y="75" text-anchor="middle" class="node-text">105</text></g>
+          <g id="nl-outer2" class="step-el"><rect x="172" y="54" width="70" height="32" rx="6" class="node-rect" /><text x="207" y="75" text-anchor="middle" class="node-text">108</text></g>
+          <g id="nl-outer3" class="step-el"><rect x="248" y="54" width="70" height="32" rx="6" class="node-rect" /><text x="283" y="75" text-anchor="middle" class="node-text">112</text></g>
+          <text x="330" y="75" class="label-text">… 36 more (N = 40)</text>
+
+          <text x="20" y="100" class="label-text">INNER — transactions (no index: full scan every outer row)</text>
+          <g id="nl-inner0" class="step-el"><rect x="20" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="48" y="127" text-anchor="middle" class="node-text" font-size="11">101</text></g>
+          <g id="nl-inner1" class="step-el"><rect x="82" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="110" y="127" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="nl-inner2" class="step-el"><rect x="144" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="172" y="127" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="nl-inner3" class="step-el"><rect x="206" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="234" y="127" text-anchor="middle" class="node-text" font-size="11">108</text></g>
+          <g id="nl-inner4" class="step-el"><rect x="268" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="296" y="127" text-anchor="middle" class="node-text" font-size="11">112</text></g>
+          <g id="nl-inner5" class="step-el"><rect x="330" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="358" y="127" text-anchor="middle" class="node-text" font-size="11">999</text></g>
+          <text x="400" y="127" class="label-text">… 3,114 more (M = 3,120)</text>
+
+          <text class="counter-text label-text" x="20" y="158" font-weight="700"></text>
+
+          <text x="20" y="186" class="label-text">Indexed alternative — B-tree on transactions.merchant_id</text>
+          <g id="nl-tree-root" class="step-el"><rect x="255" y="192" width="90" height="28" rx="6" class="node-rect" /><text x="300" y="211" text-anchor="middle" class="node-text" font-size="11">root</text></g>
+          <line x1="280" y1="220" x2="215" y2="232" class="edge-line" />
+          <line x1="330" y1="220" x2="385" y2="232" class="edge-line" />
+          <g id="nl-tree-mid0" class="step-el"><rect x="170" y="232" width="90" height="26" rx="6" class="node-rect" /><text x="215" y="250" text-anchor="middle" class="node-text" font-size="10">≤ 105</text></g>
+          <g id="nl-tree-mid1" class="step-el"><rect x="340" y="232" width="90" height="26" rx="6" class="node-rect" /><text x="385" y="250" text-anchor="middle" class="node-text" font-size="10">&gt; 105</text></g>
+          <line x1="215" y1="258" x2="195" y2="270" class="edge-line" />
+          <line x1="385" y1="258" x2="405" y2="270" class="edge-line" />
+          <g id="nl-tree-leaf0" class="step-el"><rect x="150" y="270" width="90" height="24" rx="6" class="node-rect" /><text x="195" y="286" text-anchor="middle" class="node-text" font-size="10">match: 101</text></g>
+          <g id="nl-tree-leaf1" class="step-el"><rect x="360" y="270" width="90" height="24" rx="6" class="node-rect" /><text x="405" y="286" text-anchor="middle" class="node-text" font-size="10">match: 108</text></g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation">Loading…</p>
+      </div>
+
+      <!-- ── Hash Join panel ── -->
+      <div class="visual-container" data-algo="hj" hidden>
+        <div class="step-info" aria-live="polite">Step <span class="step-num">1</span> of <span class="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 300" aria-label="Hash join: the smaller build relation is scanned once and hashed into an in-memory table, then the larger probe relation is scanned once and each row's key is looked up in that table, for a total cost of O(N plus M), with a spill to temporary files if the hash table does not fit in memory">
+          <defs>
+            <marker id="hj-arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+          <text x="320" y="18" text-anchor="middle" class="label-text" font-weight="700" font-size="13">Hash Join — build once, probe once: O(N + M)</text>
+
+          <text x="20" y="42" class="label-text">BUILD side — merchants (smaller relation, scanned once)</text>
+          <g id="hj-build0" class="step-el"><rect x="20" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="55" y="68" text-anchor="middle" class="node-text">101</text></g>
+          <g id="hj-build1" class="step-el"><rect x="96" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="131" y="68" text-anchor="middle" class="node-text">105</text></g>
+          <g id="hj-build2" class="step-el"><rect x="172" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="207" y="68" text-anchor="middle" class="node-text">108</text></g>
+          <g id="hj-build3" class="step-el"><rect x="248" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="283" y="68" text-anchor="middle" class="node-text">112</text></g>
+
+          <text x="20" y="112" class="label-text">HASH TABLE — in memory, budget = work_mem × hash_mem_multiplier</text>
+          <g id="hj-hashmem" class="step-el"><rect x="16" y="118" width="480" height="46" rx="8" fill="none" class="edge-line" stroke-dasharray="4 3" /></g>
+          <g id="hj-bucket0" class="step-el"><rect x="28" y="126" width="90" height="30" rx="6" class="node-rect" /><text x="73" y="146" text-anchor="middle" class="node-text" font-size="11">bucket: 101</text></g>
+          <g id="hj-bucket1" class="step-el"><rect x="140" y="126" width="90" height="30" rx="6" class="node-rect" /><text x="185" y="146" text-anchor="middle" class="node-text" font-size="11">bucket: 105</text></g>
+          <g id="hj-bucket2" class="step-el"><rect x="252" y="126" width="90" height="30" rx="6" class="node-rect" /><text x="297" y="146" text-anchor="middle" class="node-text" font-size="11">bucket: 108</text></g>
+          <g id="hj-bucket3" class="step-el"><rect x="364" y="126" width="90" height="30" rx="6" class="node-rect" /><text x="409" y="146" text-anchor="middle" class="node-text" font-size="11">bucket: 112</text></g>
+
+          <text x="20" y="196" class="label-text">PROBE side — transactions (larger relation, scanned once)</text>
+          <g id="hj-probe0" class="step-el"><rect x="20" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="48" y="221" text-anchor="middle" class="node-text" font-size="11">101</text></g>
+          <g id="hj-probe1" class="step-el"><rect x="82" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="110" y="221" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="hj-probe2" class="step-el"><rect x="144" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="172" y="221" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="hj-probe3" class="step-el"><rect x="206" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="234" y="221" text-anchor="middle" class="node-text" font-size="11">108</text></g>
+          <g id="hj-probe4" class="step-el"><rect x="268" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="296" y="221" text-anchor="middle" class="node-text" font-size="11">112</text></g>
+          <g id="hj-probe5" class="step-el"><rect x="330" y="202" width="56" height="30" rx="6" class="node-rect" /><text x="358" y="221" text-anchor="middle" class="node-text" font-size="11">999</text></g>
+
+          <g id="hj-lookup0" class="step-el"><line x1="48" y1="202" x2="73" y2="156" class="edge-line" marker-end="url(#hj-arrow)" /></g>
+
+          <g id="hj-spill" class="step-el"><rect x="16" y="248" width="480" height="40" rx="8" class="node-rect" /><text x="256" y="266" text-anchor="middle" class="node-text" font-size="11">spill to temporary disk files</text><text x="256" y="282" text-anchor="middle" class="label-text">Batches: 16  ← build side didn't fit</text></g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation">Loading…</p>
+      </div>
+
+      <!-- ── Merge Join panel ── -->
+      <div class="visual-container" data-algo="mj" hidden>
+        <div class="step-info" aria-live="polite">Step <span class="step-num">1</span> of <span class="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 300" aria-label="Merge join: two cursors walk both sorted relations in one forward pass, costing O(N plus M) once both sides are sorted; an unsorted side forces an explicit Sort first, costing O(N log N plus M log M), while an index on the join key supplies the order for free">
+          <text x="320" y="18" text-anchor="middle" class="label-text" font-weight="700" font-size="13">Merge Join — sorted inputs, two cursors, one pass</text>
+
+          <text x="20" y="42" class="label-text">A — merchants, sorted (or index-fed) on merchant_id</text>
+          <g id="mj-a0" class="step-el"><rect x="20" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="55" y="68" text-anchor="middle" class="node-text">101</text></g>
+          <g id="mj-a1" class="step-el"><rect x="96" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="131" y="68" text-anchor="middle" class="node-text">105</text></g>
+          <g id="mj-a2" class="step-el"><rect x="172" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="207" y="68" text-anchor="middle" class="node-text">108</text></g>
+          <g id="mj-a3" class="step-el"><rect x="248" y="48" width="70" height="30" rx="6" class="node-rect" /><text x="283" y="68" text-anchor="middle" class="node-text">112</text></g>
+
+          <text x="20" y="102" class="label-text">B — transactions, sorted on merchant_id</text>
+          <g id="mj-b0" class="step-el"><rect x="20" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="48" y="127" text-anchor="middle" class="node-text" font-size="11">101</text></g>
+          <g id="mj-b1" class="step-el"><rect x="82" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="110" y="127" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="mj-b2" class="step-el"><rect x="144" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="172" y="127" text-anchor="middle" class="node-text" font-size="11">105</text></g>
+          <g id="mj-b3" class="step-el"><rect x="206" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="234" y="127" text-anchor="middle" class="node-text" font-size="11">108</text></g>
+          <g id="mj-b4" class="step-el"><rect x="268" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="296" y="127" text-anchor="middle" class="node-text" font-size="11">112</text></g>
+          <g id="mj-b5" class="step-el"><rect x="330" y="108" width="56" height="30" rx="6" class="node-rect" /><text x="358" y="127" text-anchor="middle" class="node-text" font-size="11">999</text></g>
+
+          <text x="20" y="176" class="label-text">If neither side arrives sorted:</text>
+          <g id="mj-sort-box" class="step-el"><rect x="20" y="182" width="280" height="42" rx="8" class="node-rect" /><text x="160" y="200" text-anchor="middle" class="node-text" font-size="11">Sort Key: t.merchant_id</text><text x="160" y="216" text-anchor="middle" class="label-text">paid — O(N log N + M log M)</text></g>
+
+          <text x="330" y="176" class="label-text">If an index already supplies order:</text>
+          <g id="mj-index-box" class="step-el"><rect x="330" y="182" width="280" height="42" rx="8" class="node-rect" /><text x="470" y="200" text-anchor="middle" class="node-text" font-size="11">Index Scan on merchants_pkey</text><text x="470" y="216" text-anchor="middle" class="label-text">free — O(N + M), no memory pressure</text></g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation">Loading…</p>
+      </div>
+
+      <h3>The decision table</h3>
+      <p>This is the part worth being able to reproduce cold.</p>
+      <table class="compare">
+        <thead><tr><th></th><th>Nested Loop</th><th>Hash Join</th><th>Merge Join</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Cost</strong></td><td>O(N × M), or <strong>O(N × log M)</strong> with an inner index</td><td>O(N + M)</td><td>O(N log N + M log M), or <strong>O(N + M)</strong> if pre-sorted</td></tr>
+          <tr><td><strong>Needs an index?</strong></td><td>To be good, yes — on the <strong>inner</strong> join key</td><td>No</td><td>Helps enormously — removes the sort</td></tr>
+          <tr><td><strong>Memory</strong></td><td>Negligible</td><td>Build side must fit in <code>work_mem × hash_mem_multiplier</code></td><td>Sort needs <code>work_mem</code>, spills gracefully</td></tr>
+          <tr><td><strong>Equality only?</strong></td><td>No — any condition</td><td><strong>Yes</strong></td><td>No</td></tr>
+          <tr><td><strong>Best when</strong></td><td>Outer side is <strong>small</strong>, inner is <strong>indexed</strong></td><td>One side is small enough to hash; no useful indexes</td><td>Both sides <strong>large</strong> and <strong>already sorted</strong></td></tr>
+          <tr><td><strong>Worst when</strong></td><td>Outer is large or inner is unindexed</td><td>Build side vastly exceeds memory</td><td>Neither side is sorted and both are huge</td></tr>
+          <tr><td><strong>Rows arrive</strong></td><td>Immediately (streams)</td><td>Only after the build completes</td><td>After sorting completes</td></tr>
+        </tbody>
+      </table>
+      <p>A nested loop can return its first row almost instantly. A hash join must finish building before it emits anything. This is why the planner's choice can change under a <code>LIMIT</code> — a cheap-startup plan becomes attractive when only the first few rows are needed.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Materialize and Memoize — caching under a nested loop</h3>
+        <p>Two plan nodes appear under nested loops to make the rescanning cheaper. <code>Materialize</code> caches the inner relation's rows once, so later iterations read from memory instead of re-running the scan. <code>Memoize</code> (Postgres 14 and later) caches results per parameter value, so a repeated outer value skips the inner scan entirely.</p>
+        <p><code>Memoize</code> is the planner applying the same fix an application developer would apply to an N+1 problem: remember the answer for a repeated key. It pays off when outer values repeat often. The nested loop above is structurally identical to the application-level N+1 antipattern — fetch a list, then issue one lookup per element. The difference is entirely about where the loop runs.</p>
+        <table class="compare">
+          <thead><tr><th></th><th>Inside the engine (nested loop)</th><th>In application code (N+1)</th></tr></thead>
+          <tbody>
+            <tr><td>Per-iteration cost</td><td>A B-tree descent, pages likely already cached</td><td>A full network round trip, parse, and plan</td></tr>
+            <tr><td>Typical cost</td><td>Microseconds</td><td>About 1 ms or more</td></tr>
+            <tr><td>Planner can see it?</td><td>Yes — it costs the loop and may reject it</td><td>No — each query looks independent</td></tr>
+          </tbody>
+        </table>
+        <p>Same loop, three orders of magnitude apart. That gap is why "push the join into the database" is advice, not dogma.</p>
+
+        <h3>The row-estimate cliff</h3>
+        <p>The planner's algorithm choice is only as good as its estimate of how many rows each side produces. Get that wrong, and the choice inverts from optimal to catastrophic.</p>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> treating a <code>Hash Join → Nested Loop</code> plan flip as itself the bug, and "fixing" it by suppressing nested loops.
+          <pre><code class="lang-text">Nested Loop  (cost=... rows=5 ...) (actual time=... rows=500000 ...)
+                          ^^^^^^                          ^^^^^^^^^^
+                        estimate                            reality</code></pre>
+          <p>The plan was correct for the statistics it had. It was wrong about the statistics. A wrongly-chosen nested loop degrades <strong>without bound</strong>, because the row-count error multiplies directly into the iteration count. A wrongly-chosen hash join merely spills to disk — bad, but bounded. That asymmetry is why <code>Hash Join → Nested Loop</code> deserves alarm that the reverse flip does not, and why a surprise nested loop over a large outer relation is the most common cause of a query that used to take 50 ms and now takes an hour.</p>
+          <p>Likely causes, in order: stale statistics after a bulk load (<code>ANALYZE</code> has not caught up); a cost threshold crossed gradually as data grew, tipping the plan with nothing "broken"; and correlated columns, where the planner assumes independence and multiplies two selectivities that should not be multiplied, producing an estimate far too small. The general principle: when a plan goes wrong, the plan is rarely the bug. Trace back to the estimate that produced it.</p>
+        </div>
+
+        <h3>Batches &gt; 1 has two causes, not one</h3>
+        <p>A spilling hash join is a signal to investigate, not a diagnosis. It has two distinct causes with opposite fixes:</p>
+        <ol>
+          <li><code>work_mem</code> is genuinely too small for the workload.</li>
+          <li>The row estimate was wrong. The planner sized the hash table for the rows it expected; if it expected 10,000 and 4 million arrived, the table overflows regardless of how reasonable <code>work_mem</code> is.</li>
+        </ol>
+        <p>Check the estimated-versus-actual row count on the <strong>build</strong> side before changing any configuration — otherwise memory gets tuned forever on what is really a statistics problem. And note that <code>work_mem</code> is granted per operation, per session, not per transaction: one query with three hash joins and two sorts can hold five separate grants at once, so the real multiplier is connections × operations-per-query.</p>
+
+        <h3>Capability limit, not fallback</h3>
+        <p>A hash table can only answer "which rows have exactly this key?" It cannot answer "which rows have a key less than this one?" A join condition using <code>&lt;</code>, <code>&gt;</code>, <code>BETWEEN</code>, or a range overlap is not hashable, so nested loop and merge join are the only options for a range join. When the planner picks one of them for a range condition, it has not degraded to a fallback — a hash join was never a candidate.</p>
+        <p>Postgres makes this explicit for one join type. A <code>FULL OUTER JOIN</code> has no cheap way, under a nested loop, to identify inner rows that never matched anything, so the condition must be hash-joinable or merge-joinable:</p>
+        <pre><code class="lang-sql">-- ERROR: FULL JOIN is only supported with merge-joinable or hash-joinable join conditions
+FROM a FULL JOIN b ON a.x &lt; b.y</code></pre>
+        <p>An error that looks arbitrary becomes obvious once the capability limits of each algorithm are known.</p>
+
+        <h3>What you actually control</h3>
+        <p>The algorithm is not something to choose directly. It is a decision to shape by controlling the conditions the planner reasons about.</p>
+        <table class="compare">
+          <thead><tr><th>Lever</th><th>Effect</th></tr></thead>
+          <tbody>
+            <tr><td>Index the foreign key / join column</td><td>Makes the indexed nested loop and the sort-free merge join possible at all</td></tr>
+            <tr><td>Match the index to the join key order</td><td>The leftmost prefix must cover the join key</td></tr>
+            <tr><td>Keep statistics fresh (<code>ANALYZE</code>)</td><td>Statistics drive every cost estimate in this decision</td></tr>
+            <tr><td>Size <code>work_mem</code> for the workload</td><td>Keeps hash joins at <code>Batches: 1</code></td></tr>
+            <tr><td>Filter early and reduce the row count</td><td>A smaller outer side makes a nested loop viable</td></tr>
+          </tbody>
+        </table>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> reaching for <code>enable_nestloop = off</code> (or <code>enable_hashjoin</code> / <code>enable_mergejoin</code>) as a permanent fix for a bad plan.
+          <pre><code class="lang-sql">SET enable_nestloop = off;   -- "fixes" the one slow query...
+-- ...and now discourages nested loops for every other query on this connection too.</code></pre>
+          <p>These switches all default to <code>on</code> and are diagnostic tools, not tuning knobs. Setting one off and re-running <code>EXPLAIN</code> reveals the planner's second choice and its cost, which shows how confident the planner was — the suppression is not even absolute: "It is impossible to suppress nested-loop joins entirely, but turning this variable off discourages the planner from using one if there are other methods available." Never ship these in application configuration. If a plan is wrong, the fix is an index or better statistics.</p>
+        </div>
+
+        <h3>A separate decision: join order and GEQO</h3>
+        <p>The cost-based approach itself dates to Selinger et al.'s 1979 System R paper, which established the model every mainstream planner still uses: enumerate the plans, estimate a cost for each, pick the cheapest.</p>
+        <p>Choosing an algorithm for one join is not the whole problem. With N tables, the planner must also choose the order to combine them, and the number of possible orderings grows factorially. Below <code>geqo_threshold</code> (default 12 relations), Postgres runs a near-exhaustive search and prefers pairs of relations that share a <code>WHERE</code> join clause. Above the threshold, it switches to a genetic algorithm, and the search becomes heuristic.</p>
+        <p>Two consequences follow. Below the threshold, the order tables are written in does not matter — the planner reorders freely, so "smallest first" is folklore, not a rule. Above the threshold, planning becomes heuristic and non-deterministic, so a 15-way ORM-generated join can produce a different plan on different runs — the first thing to check when such a query has unstable performance.</p>
+
+        <h3>Cost constants</h3>
+        <p>The planner converts everything to one abstract unit, anchored on a sequential page read.</p>
+        <table class="compare">
+          <thead><tr><th>Constant</th><th>Default</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>seq_page_cost</code></td><td>1.0</td><td>The cost of a disk page fetch that is part of a sequential series.</td></tr>
+            <tr><td><code>random_page_cost</code></td><td>4.0</td><td>The cost of a non-sequential disk page fetch.</td></tr>
+            <tr><td><code>cpu_tuple_cost</code></td><td>0.01</td><td>The cost of processing each row during a query.</td></tr>
+            <tr><td><code>cpu_index_tuple_cost</code></td><td>0.005</td><td>The cost of processing each index entry during an index scan.</td></tr>
+            <tr><td><code>cpu_operator_cost</code></td><td>0.0025</td><td>The cost of processing each operator or function call.</td></tr>
+          </tbody>
+        </table>
+        <p>The 4:1 ratio between random and sequential access encodes a spinning disk. On SSDs that penalty is too high; lowering <code>random_page_cost</code> to roughly 1.1 is the standard adjustment, and it makes index scans — and therefore indexed nested loops — look correctly cheap.</p>
+
+        <h3>Reading it in <code>EXPLAIN</code></h3>
+        <p>Everything above surfaces as three node names and a handful of numbers.</p>
+        <pre><code class="lang-text">Hash Join
+  Hash Cond: (t.merchant_id = m.merchant_id)
+  ->  Seq Scan on transactions t   -- probe side
+  ->  Hash
+        Buckets: 1024  Batches: 1  Memory Usage: 40kB    -- Batches: 1 = healthy
+        ->  Seq Scan on merchants m                      -- build side</code></pre>
+        <ol>
+          <li>Which of the three node names is it — <code>Nested Loop</code>, <code>Hash Join</code>, or <code>Merge Join</code>?</li>
+          <li>Does the estimated <code>rows=</code> match the actual <code>rows=</code>? A large gap is the root cause of most bad joins.</li>
+          <li>On a hash join, what does <code>Batches:</code> say? Above 1 means it spilled.</li>
+          <li>Under a merge join, is there a <code>Sort</code> node or an <code>Index Scan</code>? A sort means an index could remove it.</li>
+          <li>On a nested loop, is the inner side an <code>Index Scan</code> or a <code>Seq Scan</code>? A sequential scan on the inner side of a nested loop over a large outer relation is an emergency signal.</li>
+        </ol>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../sql-fundamentals/index.html" data-entry="sql-fundamentals">
+        <strong>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</strong>
+        <span>The declarative <code>JOIN</code> keyword this entry gives a physical implementation to — this is where the SQL half meets the engine half.</span>
+      </a>
+      <a class="related-card" href="../window-functions/index.html" data-entry="window-functions">
+        <strong>Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions &amp; Frames</strong>
+        <span>Both build on the same declarative-versus-physical split: window functions fix a row-level computation order, this entry fixes how matching rows are found.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</strong>
+        <span>The B-tree is what turns nested loop into O(N × log M) and what makes merge join's ordering free — its leaf level already is the sorted keys.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>An index only speeds up the inner side of a nested loop if its leftmost prefix actually covers the join key.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span>An index-only scan on the inner join key removes the heap fetch an indexed nested loop would otherwise pay for every row.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>The hash table lives in the executor's own working memory, not in <code>shared_buffers</code> — a genuinely separate allocation that is easy to conflate with this one.</span>
+      </a>
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>What a sequential scan actually reads page by page, on either side of any of these three algorithms.</span>
+      </a>
+      <a class="related-card" href="../clustered-vs-nonclustered-indexes/index.html" data-entry="clustered-vs-nonclustered-indexes">
+        <strong>Clustered vs Non-clustered Indexes</strong>
+        <span>The same random-versus-sequential seek-cost story behind the 4:1 <code>random_page_cost</code> ratio that shapes every join-algorithm decision here.</span>
+      </a>
+      <a class="related-card" href="../query-planning/index.html" data-entry="query-planning">
+        <strong>Query Planning &amp; Optimization — How the Database Picks a Plan</strong>
+        <span>The System R cost-based search and the <code>geqo_threshold</code> join-ordering machinery that decides, one level up, which of these three algorithms even gets tried.</span>
+      </a>
+      <a class="related-card" href="../explain-analyze/index.html" data-entry="explain-analyze">
+        <strong>EXPLAIN &amp; EXPLAIN ANALYZE — Reading Query Plans in Practice</strong>
+        <span>Where the three node names and the <code>rows=</code> / <code>Batches:</code> diagnostics from this entry actually show up on a real plan.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/planner-optimizer.html" target="_blank" rel="noopener">PostgreSQL Documentation — 52.5. Planner/Optimizer</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/runtime-config-query.html" target="_blank" rel="noopener">PostgreSQL Documentation — 20.7. Query Planning (planner method config and cost constants)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/runtime-config-resource.html" target="_blank" rel="noopener">PostgreSQL Documentation — 20.4. Resource Consumption (work_mem, hash_mem_multiplier)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/queries-table-expressions.html" target="_blank" rel="noopener">PostgreSQL Documentation — 7.2. Table Expressions (join semantics)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A join condition uses <code>&lt;</code> instead of <code>=</code>. Which algorithms can execute it, and which never can?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">Nested loop and merge join can; hash join cannot — a hash table can only answer "which rows have exactly this key?"</button>
+            <button class="option" data-correct="false">Hash join and merge join can; nested loop cannot.</button>
+            <button class="option" data-correct="false">All three can execute any join condition equally well.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">A hash table is an equality lookup structure. A range condition is not hashable, so nested loop and merge join are the only two candidates the planner ever considers for it.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text"><code>EXPLAIN ANALYZE</code> shows a <code>Hash</code> node with <code>Batches: 16</code>. What does that tell you?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">The join is healthy — 16 is just the bucket count.</button>
+            <button class="option" data-correct="true">The build side did not fit in <code>work_mem × hash_mem_multiplier</code>, so the hash table was partitioned and spilled to temporary files.</button>
+            <button class="option" data-correct="false">The planner actually chose a nested loop instead.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>Batches: 1</code> is the healthy state. Any higher count means the join spilled — caused either by a genuinely undersized <code>work_mem</code> or by a wrong row estimate that sized the table too small.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A query that ran in 50 ms for months now takes 40 minutes, and its plan flipped from <code>Hash Join</code> to <code>Nested Loop</code>. What would you check first, and why does this direction of flip deserve more concern than the reverse?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Check the estimated-versus-actual <code>rows=</code> on the nested loop node before touching the join type — the plan was correct for the statistics it had, so the join type is a symptom, not the bug. This direction is dangerous because a wrongly-chosen nested loop's error multiplies: believing the outer side holds 5 rows when it holds 500,000 produces 500,000 index descents instead of 5, a runaway cost. A wrongly-chosen hash join, in contrast, only spills to disk — still O(N + M), just slower by a constant factor. It cannot run away the same way.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused at "some" calibration, safe no-op) ──────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Algorithm tab switcher ──────────────────────────────────────
+    document.querySelectorAll('.algo-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.algo-tab').forEach(t => {
+          t.classList.remove('primary');
+          t.setAttribute('aria-pressed', 'false');
+        });
+        tab.classList.add('primary');
+        tab.setAttribute('aria-pressed', 'true');
+        document.querySelectorAll('.visual-container[data-algo]').forEach(p => {
+          p.hidden = (p.dataset.algo !== tab.dataset.algo);
+        });
+      });
+    });
+
+    // ── Three independent step-reveal algorithm diagrams ────────────
+    const algoDiagrams = {
+      nl: {
+        steps: [
+          { activate: ['#nl-outer0', '#nl-inner0', '#nl-inner1', '#nl-inner2', '#nl-inner3', '#nl-inner4', '#nl-inner5'],
+            counter: 'comparisons so far: 6 (1 outer row × 6 inner rows)',
+            explanation: 'Outer row 1 (merchant 101) triggers a full scan of the inner relation — all 6 transaction rows checked for a match. No index on the inner side, so nothing can be skipped.' },
+          { activate: ['#nl-outer1', '#nl-inner0', '#nl-inner1', '#nl-inner2', '#nl-inner3', '#nl-inner4', '#nl-inner5'],
+            counter: 'comparisons so far: 12 (2 outer rows × 6 inner rows)',
+            explanation: 'Outer row 2 (merchant 105) rescans the same 6 rows from scratch. This repeats for every outer row: total comparisons = N × M. At a larger, entirely plausible scale — 300 outer rows against 3,120 inner rows — that is about 936,000 comparisons for a result of a few thousand rows.' },
+          { activate: ['#nl-outer2', '#nl-outer3', '#nl-inner0', '#nl-inner1', '#nl-inner2', '#nl-inner3', '#nl-inner4', '#nl-inner5'],
+            counter: 'comparisons so far: 24 (4 outer rows × 6 inner rows) → O(N × M)',
+            explanation: 'Rows 3 and 4 repeat the same full rescan. Naively this is O(N × M) — it is as bad as it sounds, and it gets worse as either side grows.' },
+          { activate: ['#nl-outer0', '#nl-tree-root', '#nl-tree-mid0', '#nl-tree-leaf0'],
+            counter: 'indexed lookup: ~3 steps (log₂6 ≈ 3) instead of 6 → O(log M)',
+            explanation: 'Now add an index on the inner join key. Outer row 1 no longer scans all 6 rows — it descends a B-tree in about log₂(6) ≈ 3 steps and lands directly on its match.' },
+          { activate: ['#nl-outer0', '#nl-outer1', '#nl-outer2', '#nl-outer3', '#nl-tree-root', '#nl-tree-mid0', '#nl-tree-mid1', '#nl-tree-leaf0', '#nl-tree-leaf1'],
+            counter: 'all 4 outer rows indexed: ~12 total steps → O(N × log M)',
+            explanation: 'Every outer row now costs O(log M) instead of O(M). Total cost drops to O(N × log M) — the best plan available when the outer side is small and the inner side is indexed on the join key.' },
+        ],
+      },
+      hj: {
+        steps: [
+          { activate: ['#hj-build0', '#hj-build1', '#hj-build2', '#hj-build3'],
+            explanation: 'Build phase: scan the smaller relation (merchants) once.' },
+          { activate: ['#hj-build0', '#hj-build1', '#hj-build2', '#hj-build3', '#hj-hashmem', '#hj-bucket0', '#hj-bucket1', '#hj-bucket2', '#hj-bucket3'],
+            explanation: 'Hash each row on the join key and store it in an in-memory hash table. The planner always builds on the smaller side, because that table has to fit in memory.' },
+          { activate: ['#hj-hashmem', '#hj-bucket0', '#hj-bucket1', '#hj-bucket2', '#hj-bucket3', '#hj-probe0', '#hj-probe1', '#hj-probe2', '#hj-probe3', '#hj-probe4', '#hj-probe5'],
+            explanation: "Probe phase: scan the larger relation (transactions) once. Each side is read exactly once, so the total cost is O(N + M)." },
+          { activate: ['#hj-hashmem', '#hj-bucket0', '#hj-probe0', '#hj-probe5', '#hj-lookup0'],
+            explanation: "Hash each probe row's key and look it up in the table. A hash table can only answer “which rows have exactly this key?” — this is why hash join can only implement an equijoin, and why probe row 999 finds no bucket at all." },
+          { activate: ['#hj-hashmem', '#hj-spill'],
+            explanation: 'If the build side does not fit in work_mem × hash_mem_multiplier (8 MB by default), the join does not fail — it batches: both inputs are partitioned and spilled to temporary files. Batches: 1 in EXPLAIN ANALYZE means healthy; anything higher means it spilled.' },
+        ],
+      },
+      mj: {
+        steps: [
+          { activate: ['#mj-a0', '#mj-b0'],
+            explanation: 'Two cursors start at the first row of each sorted input. 101 = 101 → match, emit the joined row.' },
+          { activate: ['#mj-a1', '#mj-b1', '#mj-b2'],
+            explanation: 'Advance the A cursor to 105. It matches two B rows (both 105) before the B cursor moves past it.' },
+          { activate: ['#mj-a2', '#mj-b3'],
+            explanation: 'A advances to 108, B advances to 108 → match.' },
+          { activate: ['#mj-a3', '#mj-b4'],
+            explanation: 'A advances to 112, B advances to 112 → match. Every step moves a cursor forward — nothing is ever rescanned, so the cost is O(N + M) once both sides are sorted.' },
+          { activate: ['#mj-sort-box'],
+            explanation: 'If neither input arrives sorted, Postgres inserts an explicit Sort before the merge. That sort dominates the cost: O(N log N + M log M).' },
+          { activate: ['#mj-index-box'],
+            explanation: "A B-tree's leaf level is already the keys in sorted order. An index scan on the join key emits rows in that order for free — no sort step, no memory pressure, and the join drops to O(N + M)." },
+        ],
+      },
+    };
+
+    document.querySelectorAll('.visual-container[data-algo]').forEach(container => {
+      const prefix = container.dataset.algo;
+      const steps = (algoDiagrams[prefix] || {}).steps || [];
+      if (!steps.length) return;
+      const svg = container.querySelector('.diagram-svg');
+      const stepNumEl = container.querySelector('.step-num');
+      const stepTotalEl = container.querySelector('.step-total');
+      const stepExpEl = container.querySelector('.step-explanation');
+      const prevBtn = container.querySelector('.prev-btn');
+      const nextBtn = container.querySelector('.next-btn');
+      const resetBtn = container.querySelector('.reset-btn');
+      let current = 0;
+      stepTotalEl.textContent = steps.length;
+
+      function applyStep(i) {
+        svg.querySelectorAll('.step-el').forEach(el => el.classList.remove('active'));
+        (steps[i].activate || []).forEach(sel => {
+          svg.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (steps[i].counter !== undefined) {
+          const counterEl = svg.querySelector('.counter-text');
+          if (counterEl) counterEl.textContent = steps[i].counter;
+        }
+        stepExpEl.textContent = steps[i].explanation || '';
+        stepNumEl.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (current > 0) applyStep(--current); });
+      nextBtn.addEventListener('click', () => { if (current < steps.length - 1) applyStep(++current); });
+      resetBtn.addEventListener('click', () => { current = 0; applyStep(0); });
+    });
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'sql-fundamentals':                  { title: 'SQL Fundamentals — Joins, Aggregations, Subqueries & CTEs', summary: 'The cross-product join model, GROUP BY / HAVING, correlated subqueries, and CTEs — the declarative layer this entry executes.' },
+      'window-functions':                  { title: 'Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions & Frames', summary: 'Aggregating without collapsing rows: PARTITION BY, frames, and RANGE vs ROWS.' },
+      'btree-indexes':                     { title: 'B-tree Indexes — Structure & How Range/Equality Queries Use Them', summary: 'How a B-tree turns O(n) scans into O(log n) lookups, and gives ORDER BY for free.' },
+      'composite-indexes':                 { title: 'Composite Indexes — Column Order & the Leftmost-Prefix Rule', summary: 'The leftmost-prefix rule and equality-before-range column ordering for multicolumn indexes.' },
+      'covering-indexes':                  { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone, and why Postgres can still force a heap fetch.' },
+      'buffer-pool':                       { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: 'How shared_buffers caches pages, and why a hash table’s memory is a separate budget entirely.' },
+      'heap-storage-layout':               { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files, 8 KB pages, and line-pointer slots — what a sequential scan actually reads.' },
+      'clustered-vs-nonclustered-indexes': { title: 'Clustered vs Non-clustered Indexes', summary: 'Rows-in-the-leaf vs pointer-to-heap, and the clustering factor behind random vs sequential cost.' },
+      'query-planning':                    { title: 'Query Planning & Optimization — How the Database Picks a Plan', summary: 'The parser/rewriter/planner/executor path, cost model, and System R search that chooses this entry’s algorithms.' },
+      'explain-analyze':                   { title: 'EXPLAIN & EXPLAIN ANALYZE — Reading Query Plans in Practice', summary: 'Reading real query plans: node anatomy, estimated vs actual rows, and the diagnostic order.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

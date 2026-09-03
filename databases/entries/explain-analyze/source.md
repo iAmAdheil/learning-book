@@ -5,8 +5,8 @@ topic: databases
 bloom-level: some
 created: 2026-09-01
 updated: 2026-09-01
-published: null
-related: [query-planning, join-algorithms, sql-fundamentals, btree-indexes, composite-indexes, covering-indexes, buffer-pool, heap-storage-layout]
+published: 2026-09-03
+related: [query-planning, join-algorithms, sql-fundamentals, btree-indexes, composite-indexes, covering-indexes, buffer-pool, heap-storage-layout, statistics-cardinality]
 tags: [explain, explain-analyze, query-plan, plan-tree, startup-cost, total-cost, estimated-rows, actual-rows, width, loops, per-loop-averages, rows-removed-by-filter, buffers, shared-hit, shared-read, planning-time, execution-time, seq-scan, index-scan, index-only-scan, bitmap-heap-scan, recheck-cond, heap-fetches, nested-loop, hash-join, merge-join, batches, external-merge, sort-method, work-mem, timing-off, generic-plan, format-json, verbose, settings, wal, side-effects, rollback, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — 14.1. Using EXPLAIN"
@@ -243,3 +243,54 @@ Note that "use a hash join instead" was never the answer. The join algorithm was
 ## The one-line summary
 
 > Find the **lowest** node where estimated and actual rows diverge sharply. Multiply anything under a nested loop by `loops`. Everything else is downstream of those two numbers.
+
+---
+
+## Clarifications
+
+### `Index Cond` versus `Filter` — what `Rows Removed by Filter` actually measures
+
+Added after recall mistook this line for a statement about access strategy. It is not. It counts **rows this node read and then discarded** because they failed a filter condition — a measure of wasted work, and it appears on index scans just as readily as on sequential scans.
+
+| | Applied where | Cost of a non-matching row |
+|---|---|---|
+| **`Index Cond`** | during the B-tree traversal | **never visited** — the index entry is skipped |
+| **`Filter`** | after the row is retrieved | **fully paid** — heap fetch performed, then discarded |
+
+A row counted by `Rows Removed by Filter` is one the engine already went to the heap for: it paid the page access, read the tuple, checked visibility, and dropped it. So `Rows Removed by Filter: 3000000` on a node emitting 12 rows means three million heap fetches were performed and wasted.
+
+**The fix is therefore more specific than "create an index"** — an index often already exists. The goal is to move the predicate *from* `Filter` *into* `Index Cond`:
+
+```
+idx(merchant_id)          -> Index Cond: merchant_id     Filter: status    <- 8734 wasted
+idx(merchant_id, status)  -> Index Cond: merchant_id AND status            <- 0 wasted
+```
+
+**Diagnostic reflex:** a `Filter` line on an index scan with a large `Rows Removed` count is the question *"can that predicate become part of the index?"* — which is what composite index design exists to answer. See [[composite-indexes]].
+
+### Why `BUFFERS` beats timing when comparing two plans
+
+Two engineers benchmark the same fix on the same machine and disagree about whether it helped. Both read the plan correctly. The difference is which *number* they trusted.
+
+Timings depend on cache warmth, background load, and whatever else the machine was doing. **Buffer counts do not** — they are a deterministic count of pages touched.
+
+```
+Buffers: shared hit=200000 read=812   ->   shared hit=1500 read=40
+```
+
+That is a real collapse in work, whatever the clock said on any single run.
+
+**The consequence that matters for practice: on a small, fully-cached dataset a bad plan and a good plan can take almost the same wall-clock time.** Every table fits in memory, so nothing has to be read from disk either way, and the timings barely separate. The buffer counts still separate cleanly.
+
+This is the concrete reason `EXPLAIN (ANALYZE, BUFFERS)` should be the default incantation rather than plain `EXPLAIN ANALYZE`, and it matters *most* on small practice datasets — exactly where timing-based comparison is least informative.
+
+### Do the loop arithmetic explicitly
+
+Reading `(actual time=0.014 rows=3 loops=50000)` as "higher than it looks" is correct but not usable. Convert it on the page:
+
+```
+0.014 ms x 50,000 loops  ~= 700 ms
+3 rows   x 50,000 loops   = 150,000 rows
+```
+
+"It's 700 ms and 150,000 rows" is a diagnosis. "It's higher" is not.

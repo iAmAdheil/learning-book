@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SELECT FOR UPDATE &amp; SKIP LOCKED — Row Locks and the Postgres Job Queue — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Entry-scoped diagram variants, built on the shared stylesheet's CSS vars.
+       Higher selector specificity than the shared .node-rect.active / .edge-line.active
+       rules, so these variants win without touching the shared stylesheet. */
+    .diagram-svg .node-rect.bad.active   { fill: var(--bad-soft);  stroke: var(--bad); }
+    .diagram-svg .node-rect.good.active  { fill: var(--good-soft); stroke: var(--good); }
+    .diagram-svg .badge-box.bad          { fill: var(--bad-soft);  stroke: var(--bad); }
+    .diagram-svg .badge-box.good         { fill: var(--good-soft); stroke: var(--good); }
+    .diagram-svg .badge-box.neutral      { fill: var(--surface-elev); stroke: var(--text-muted); }
+    .diagram-svg .badge-text.bad         { fill: var(--bad); }
+    .diagram-svg .badge-text.good        { fill: var(--good); }
+    .diagram-svg .badge-text.neutral     { fill: var(--text-muted); }
+    .diagram-svg .edge-line.good.active  { stroke: var(--good); }
+    .diagram-svg .conflict-text          { fill: var(--bad); font-weight: 600; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>SELECT FOR UPDATE &amp; SKIP LOCKED — Row Locks and the Postgres Job Queue</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text"><code>SELECT ... FOR UPDATE</code> turns an ordinary read into a <strong>read-and-reserve</strong>: it takes a row-level exclusive lock on every row it returns, held until the transaction ends. It is the explicit, pessimistic escape hatch from MVCC, whose snapshot reads never block and therefore never stop two transactions from reading the same row and both acting on it. <code>SKIP LOCKED</code> then changes only the <em>contention policy</em> — instead of waiting for a locked row, a worker skips it and claims the next one, which is exactly what turns a naive job queue with a concurrency of one into a queue that scales with worker count.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">select-for-update</span>
+        <span class="badge tag">skip-locked</span>
+        <span class="badge tag">nowait</span>
+        <span class="badge tag">row-level-lock</span>
+        <span class="badge tag">for-share</span>
+        <span class="badge tag">for-key-share</span>
+        <span class="badge tag">for-no-key-update</span>
+        <span class="badge tag">job-queue</span>
+        <span class="badge tag">work-queue</span>
+        <span class="badge tag">lost-update</span>
+        <span class="badge tag">read-modify-write</span>
+        <span class="badge tag">evalplanqual</span>
+        <span class="badge tag">read-committed</span>
+        <span class="badge tag">repeatable-read</span>
+        <span class="badge tag">40001</span>
+        <span class="badge tag">pessimistic-locking</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-15 · Updated 2026-08-24</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl>
+        <dt><code>SELECT ... FOR UPDATE</code></dt>
+        <dd>A locking clause that reads rows "as though for update": it takes a row-level exclusive lock on every returned row, held until the transaction commits or rolls back, blocking other transactions from locking, modifying, or deleting that row.</dd>
+
+        <dt><code>SKIP LOCKED</code></dt>
+        <dd>A contention policy on the locking clause: if a candidate row is already locked by another transaction, the scan silently skips it and moves to the next one, instead of waiting.</dd>
+
+        <dt><code>NOWAIT</code></dt>
+        <dd>The opposite contention policy: if a candidate row is already locked, the statement fails immediately with an error (SQLSTATE <code>55P03</code>) instead of waiting or skipping.</dd>
+
+        <dt>Row-level lock strength</dt>
+        <dd>Postgres has four row-lock modes — <code>FOR KEY SHARE</code>, <code>FOR SHARE</code>, <code>FOR NO KEY UPDATE</code>, and <code>FOR UPDATE</code> — ordered weakest to strongest, each conflicting with a different subset of the others.</dd>
+
+        <dt>EvalPlanQual</dt>
+        <dd>The re-check Postgres runs under READ COMMITTED when a blocked locking statement's target row was changed by the transaction it was waiting on: it re-evaluates the <code>WHERE</code> clause against the new row version before deciding whether to proceed or skip.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A single-statement job-queue claim. A <code>WITH</code> query does the locking and picks candidates; the outer <code>UPDATE</code> marks them and hands the payload back — one round trip, no window where a row is locked but not yet marked as claimed:</p>
+      <pre><code class="lang-sql">WITH claimed AS (
+    SELECT id
+    FROM jobs
+    WHERE status = 'pending'
+      AND run_after &lt;= now()
+    ORDER BY priority DESC, run_after
+    FOR UPDATE SKIP LOCKED
+    LIMIT 10
+)
+UPDATE jobs j
+SET status = 'running', started_at = now(), attempts = attempts + 1
+FROM claimed c
+WHERE j.id = c.id
+RETURNING j.id, j.payload;</code></pre>
+      <p>Every clause here is load-bearing:</p>
+      <ul>
+        <li><strong><code>FOR UPDATE</code> sits inside the <code>WITH</code> query, not the outer statement.</strong> A locking clause on the outer query does not reach into a <code>WITH</code> query it references — locking has to happen where the candidates are actually selected.</li>
+        <li><strong><code>LIMIT 10</code>, not <code>LIMIT 1</code>.</strong> Locking stops once enough rows satisfy the limit, so batching bounds the lock set while amortizing round trips across workers.</li>
+        <li><strong><code>ORDER BY</code> runs before <code>FOR UPDATE</code>.</strong> It gives FIFO/priority semantics — a skipped row does not break the order, a worker simply gets the next unclaimed row in line.</li>
+        <li><strong>Marking <code>status = 'running'</code> in the same statement.</strong> The lock disappears the instant the transaction commits; without a durable status flag, the next poll would re-claim the same row. The lock provides mutual exclusion, the status column provides the state — both are required.</li>
+      </ul>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture two workers polling the same jobs table for the next thing to do. Both run the exact same query, ordered the same way, so both reach for the exact same row first. Row-level locking decides what happens at the instant their queries collide — and the clause you choose decides whether that collision means <em>waiting</em>, <em>failing</em>, or <em>moving on</em>. Step through the race below, then compare the three outcomes side by side.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">6</span></div>
+        <svg class="diagram-svg" viewBox="0 0 700 400" aria-label="Two workers racing to claim the same row in a jobs table, showing the three different outcomes under WAIT, NOWAIT, and SKIP LOCKED">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <text x="350" y="24" text-anchor="middle" class="label-text" font-weight="700">jobs table — ORDER BY created_at LIMIT 1 FOR UPDATE ...</text>
+
+          <!-- Worker A -->
+          <g id="node-a" class="step-el">
+            <rect x="30" y="90" width="150" height="70" rx="6" class="node-rect" />
+            <text x="105" y="118" text-anchor="middle" class="node-text" font-weight="700">Worker A</text>
+            <text x="105" y="136" text-anchor="middle" class="label-text">first to run the query</text>
+          </g>
+
+          <!-- Worker B -->
+          <g id="node-b" class="step-el">
+            <rect x="520" y="90" width="150" height="70" rx="6" class="node-rect" />
+            <text x="595" y="118" text-anchor="middle" class="node-text" font-weight="700">Worker B</text>
+            <text x="595" y="136" text-anchor="middle" class="label-text">runs concurrently</text>
+          </g>
+
+          <!-- Row 1 -->
+          <g id="node-row1" class="step-el">
+            <rect x="285" y="80" width="130" height="45" rx="6" class="node-rect good" />
+            <text x="350" y="98" text-anchor="middle" class="node-text" font-weight="700">Row 1</text>
+            <text x="350" y="114" text-anchor="middle" class="label-text">oldest pending job</text>
+          </g>
+
+          <!-- Row 2 -->
+          <g id="node-row2" class="step-el">
+            <rect x="285" y="140" width="130" height="45" rx="6" class="node-rect good" />
+            <text x="350" y="158" text-anchor="middle" class="node-text" font-weight="700">Row 2</text>
+            <text x="350" y="174" text-anchor="middle" class="label-text">next pending job</text>
+          </g>
+
+          <!-- Edge A -> Row1 -->
+          <path id="edge-a-row1" class="step-el edge-line" d="M180,120 L285,102" marker-end="url(#arrow)" />
+          <!-- Edge B -> Row1 (conflict attempt) -->
+          <path id="edge-b-row1" class="step-el edge-line" d="M520,120 L415,102" marker-end="url(#arrow)" stroke-dasharray="4 3" />
+          <!-- Edge B -> Row2 (skip-locked success) -->
+          <path id="edge-b-row2" class="step-el edge-line good" d="M520,140 L415,162" marker-end="url(#arrow)" />
+
+          <!-- Conflict marker -->
+          <g id="label-conflict" class="step-el">
+            <text x="350" y="205" text-anchor="middle" class="conflict-text">🔒 Row 1 already locked by A</text>
+          </g>
+
+          <!-- Policy comparison caption -->
+          <text x="350" y="235" text-anchor="middle" class="label-text">Same collision — three possible resolutions:</text>
+
+          <!-- WAIT badge -->
+          <g id="badge-wait" class="step-el">
+            <rect x="60" y="255" width="180" height="70" rx="8" class="badge-box neutral" />
+            <text x="150" y="278" text-anchor="middle" class="node-text" font-weight="700">(default) WAIT</text>
+            <text x="150" y="296" text-anchor="middle" class="label-text">B blocks until A ends,</text>
+            <text x="150" y="311" text-anchor="middle" class="label-text">then re-checks Row 1</text>
+          </g>
+
+          <!-- NOWAIT badge -->
+          <g id="badge-nowait" class="step-el">
+            <rect x="260" y="255" width="180" height="70" rx="8" class="badge-box bad" />
+            <text x="350" y="278" text-anchor="middle" class="node-text" font-weight="700">NOWAIT</text>
+            <text x="350" y="296" text-anchor="middle" class="badge-text bad">✗ 55P03</text>
+            <text x="350" y="311" text-anchor="middle" class="label-text">lock_not_available</text>
+          </g>
+
+          <!-- SKIP LOCKED badge -->
+          <g id="badge-skip" class="step-el">
+            <rect x="460" y="255" width="180" height="70" rx="8" class="badge-box good" />
+            <text x="550" y="278" text-anchor="middle" class="node-text" font-weight="700">SKIP LOCKED</text>
+            <text x="550" y="296" text-anchor="middle" class="badge-text good">↷ moves to Row 2</text>
+            <text x="550" y="311" text-anchor="middle" class="label-text">throughput scales with workers</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <p>The three outcomes side by side, as a quick reference:</p>
+      <table class="compare">
+        <thead><tr><th>Policy</th><th>Row is already locked →</th><th>Use when</th></tr></thead>
+        <tbody>
+          <tr><td><em>(default)</em> wait</td><td>block until the holder commits/rolls back</td><td>you need <strong>this specific row</strong> — a bank transfer, an inventory decrement</td></tr>
+          <tr><td><code>NOWAIT</code></td><td>raise <code>55P03 lock_not_available</code> immediately</td><td>you'd rather fail fast than pile up waiting connections</td></tr>
+          <tr><td><code>SKIP LOCKED</code></td><td>skip it, return the next candidate</td><td><strong>any row will do</strong> — queues, work distribution, batch claiming</td></tr>
+        </tbody>
+      </table>
+      <p>One scope limit applies to all three: <code>NOWAIT</code> and <code>SKIP LOCKED</code> only change what happens to the <em>row-level</em> lock. The ordinary table-level <code>ROW SHARE</code> lock is still taken the normal way, so either policy will still block behind a concurrent <code>ALTER TABLE</code> or <code>VACUUM FULL</code> holding an exclusive table lock.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>The four lock strengths and how they conflict</h3>
+        <p>Postgres has four row-level modes, weakest to strongest. The two "key" variants exist almost entirely so foreign-key checks don't block ordinary updates:</p>
+        <table class="compare">
+          <thead><tr><th>Mode</th><th>Blocks</th><th>Does not block</th><th>Typical origin</th></tr></thead>
+          <tbody>
+            <tr><td><code>FOR KEY SHARE</code></td><td><code>FOR UPDATE</code>, <code>DELETE</code>, key-changing <code>UPDATE</code></td><td><code>FOR NO KEY UPDATE</code>, <code>FOR SHARE</code>, <code>FOR KEY SHARE</code></td><td>FK check on the parent row</td></tr>
+            <tr><td><code>FOR SHARE</code></td><td><code>UPDATE</code>, <code>DELETE</code>, <code>FOR UPDATE</code>, <code>FOR NO KEY UPDATE</code></td><td><code>FOR SHARE</code>, <code>FOR KEY SHARE</code></td><td>"read this and keep it stable"</td></tr>
+            <tr><td><code>FOR NO KEY UPDATE</code></td><td><code>UPDATE</code>, <code>DELETE</code>, <code>FOR UPDATE</code>, <code>FOR SHARE</code></td><td><code>FOR KEY SHARE</code></td><td>any <code>UPDATE</code> not touching a key column</td></tr>
+            <tr><td><code>FOR UPDATE</code></td><td><strong>everything, including itself</strong></td><td>—</td><td><code>DELETE</code>; key-column <code>UPDATE</code>; explicit <code>FOR UPDATE</code></td></tr>
+          </tbody>
+        </table>
+        <p>The shape to remember: it's a staircase. <code>FOR UPDATE</code> conflicts with all four — which is why two <code>FOR UPDATE</code>s on one row always serialize, the fact the job-queue pattern depends on — while <code>FOR KEY SHARE</code> conflicts only with <code>FOR UPDATE</code>. That's why <code>UPDATE users SET last_seen = now()</code> doesn't block a concurrent insert into a table referencing that user: the insert needs only <code>FOR KEY SHARE</code>, the update takes only <code>FOR NO KEY UPDATE</code>, and those two never conflict.</p>
+        <p>Locks are released only at transaction end (or rollback to a savepoint) — never per statement, and there is no limit on how many rows one transaction can lock. The lock lives in the row's tuple header on disk, so a pure <code>SELECT FOR UPDATE</code> can dirty pages and generate WAL.</p>
+
+        <h3>READ COMMITTED vs REPEATABLE READ on a locked row</h3>
+        <p>This is the subtlest part of the topic, and it follows directly from READ COMMITTED taking a fresh snapshot per statement. When a statement hits a row a concurrent transaction has locked, it waits, and on commit re-evaluates its <code>WHERE</code> clause against the row's <em>new</em> version (EvalPlanQual). If the new version still matches, it proceeds against it. If it no longer matches, the row is silently skipped — even if the row satisfied the condition both before and after, just not at the exact moment the lock was taken:</p>
+        <pre><code class="lang-sql">BEGIN;
+UPDATE website SET hits = hits + 1;
+-- from another session:  DELETE FROM website WHERE hits = 10;
+COMMIT;
+-- the DELETE has no effect, even though hits = 10 both before and after the UPDATE</code></pre>
+        <p>REPEATABLE READ handles the same collision differently: since it cannot re-read a newer row version without breaking its own snapshot, it aborts instead of re-checking:</p>
+        <pre><code>ERROR:  could not serialize access due to concurrent update   -- SQLSTATE 40001</code></pre>
+        <p>The contract is the same retry loop used throughout Postgres's concurrency control: catch <code>40001</code>, abort, retry the whole transaction from the top — on retry, the other transaction's change is already part of the new snapshot. <strong>Interview framing:</strong> READ COMMITTED trades a stable view for liveness (re-check and continue); REPEATABLE READ trades liveness for a stable view (abort and retry).</p>
+
+        <h3>The gotchas</h3>
+        <ul>
+          <li><strong><code>ORDER BY</code> results can come back out of order.</strong> Under READ COMMITTED, sorting happens before the lock wait, so the ordering column can change while a row is blocked. Wrapping the whole query in <code>FOR UPDATE</code> before sorting fixes it, at the cost of locking every row of the table — worth it only if concurrent updates to that column are actually expected.</li>
+          <li><strong>Rows can be locked but not returned.</strong> A row that matched at snapshot time gets locked even if it no longer matches by the time it would be returned. The lock set is a superset of the result set.</li>
+          <li><strong><code>OFFSET</code>-skipped rows are still locked.</strong> <code>LIMIT</code> bounds the lock set; <code>OFFSET</code> does not — paginating with <code>OFFSET ... FOR UPDATE</code> locks every row up to and including the current page.</li>
+          <li><strong>The clause is illegal with <code>GROUP BY</code>, <code>HAVING</code>, <code>DISTINCT</code>, aggregation, or any <code>UNION</code>/<code>INTERSECT</code>/<code>EXCEPT</code> input or output</strong> — the output rows can no longer be mapped back to individual table rows.</li>
+        </ul>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> using <code>SKIP LOCKED</code> on a query that must see every matching row — a balance sweep, an inventory total, a reconciliation job.
+          <pre><code class="lang-sql">-- WRONG: silently undercounts if any account row is locked elsewhere
+SELECT SUM(balance) FROM accounts
+WHERE status = 'active'
+FOR UPDATE SKIP LOCKED;</code></pre>
+          <p><code>SKIP LOCKED</code> returns a deliberately incomplete result set. Any row another transaction has locked is simply missing from the sum — no error, no warning, just a wrong total that looks correct. <code>SKIP LOCKED</code> is correct exactly when "any available row will do," and a total over every row is the opposite of that requirement.</p>
+        </div>
+
+        <h3>The job-queue failure mode</h3>
+        <p>If a worker crashes mid-job after committing <code>status = 'running'</code>, the lock disappears at commit but the row is now stranded — no lock protects it, but its status says it's taken. The standard fix is a reaper that resets rows where <code>status = 'running' AND started_at &lt; now() - interval '5 minutes'</code>, plus an <code>attempts</code> cap routing repeat offenders to a dead-letter state. This is why real job rows need a heartbeat or lease column, not just a boolean.</p>
+
+        <h3>Relation to deadlocks</h3>
+        <p><code>FOR UPDATE</code> is pessimistic locking, so it inherits pessimistic locking's hazard: transactions locking the same rows in different orders can deadlock, fixed the same way — a consistent global lock order, most simply <code>ORDER BY id</code> so every transaction walks rows in the same direction. <code>SKIP LOCKED</code> is interesting here because it structurally removes the hold-and-wait condition for queue workers: a worker never waits on a row lock at all, so a wait-for cycle among workers can't form. A <code>SKIP LOCKED</code> queue is deadlock-free by construction.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>FOR UPDATE's "lock on read, release at commit" behavior is Postgres's strict-2PL half; 2PL is the growing/shrinking-phase theory this practice implements.</span>
+      </a>
+      <a class="related-card" href="../deadlocks/index.html" data-entry="deadlocks">
+        <strong>Deadlocks — Detection, Prevention &amp; the Coffman Conditions</strong>
+        <span>Pessimistic row locking can deadlock when transactions lock rows in different orders — the same hazard fixed by consistent lock ordering, and the one SKIP LOCKED queues avoid by construction.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>Why FOR UPDATE behaves differently under READ COMMITTED (re-check via EvalPlanQual) versus REPEATABLE READ (abort with 40001) traces straight back to each level's snapshot rules.</span>
+      </a>
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC — How Postgres Implements Multi-Version Concurrency Control</strong>
+        <span>FOR UPDATE exists because MVCC's snapshot reads never block — it's the explicit opt-out for the one case where you need a read to reserve, not just observe.</span>
+      </a>
+      <a class="related-card" href="../advisory-locks/index.html" data-entry="advisory-locks">
+        <strong>Advisory Locks — Application-Level Coordination Through the Database</strong>
+        <span>Both are pessimistic locks Postgres arbitrates, but advisory locks guard application-invented integers, not table rows — useful when there's no row to lock at all.</span>
+      </a>
+      <a class="related-card" href="../optimistic-vs-pessimistic-locking/index.html" data-entry="optimistic-vs-pessimistic-locking">
+        <strong>Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length</strong>
+        <span>FOR UPDATE is the pessimistic answer to the lost-update race; this entry lays out when a version-column compare-and-swap wins instead.</span>
+      </a>
+      <a class="related-card" href="../sql-fundamentals/index.html" data-entry="sql-fundamentals">
+        <strong>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</strong>
+        <span>The job-queue claim query depends on knowing that a locking clause on the outer statement doesn't reach into a referenced WITH query — a CTE-scoping rule covered there in full.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html" target="_blank" rel="noopener">PostgreSQL Documentation — Explicit Locking (13.3. Row-Level Locks)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-select.html" target="_blank" rel="noopener">PostgreSQL Documentation — SELECT (The Locking Clause)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/transaction-iso.html" target="_blank" rel="noopener">PostgreSQL Documentation — Transaction Isolation (13.2. Read Committed / Repeatable Read)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">Two transactions both run a plain <code>SELECT balance ...</code> (no locking clause) under READ COMMITTED, then each computes a new balance and writes it back. What actually stops the classic lost-update race here?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">Nothing — a plain SELECT takes no row lock, so the second write silently overwrites the first.</button>
+            <button class="option" data-correct="false">READ COMMITTED automatically re-validates every SELECT against the latest row version.</button>
+            <button class="option" data-correct="false">Postgres always serializes UPDATE statements that touch the same table.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Row-level locks block only writers and lockers to the same row — they never affect plain querying. A bare SELECT reserves nothing, so both transactions can read the same stale value and the last UPDATE wins. Adding FOR UPDATE to the SELECT is what closes the race.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A job-claim query wraps <code>SELECT ... FOR UPDATE SKIP LOCKED</code> inside a <code>WITH</code> clause, and an outer <code>UPDATE</code> uses that CTE's results. A developer moves <code>FOR UPDATE SKIP LOCKED</code> to the outer statement instead. What happens?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Nothing changes — Postgres pushes the locking clause down into the CTE automatically.</button>
+            <button class="option" data-correct="true">The outer clause locks nothing useful — a locking clause on the primary query does not reach into a referenced WITH query.</button>
+            <button class="option" data-correct="false">Postgres raises a syntax error at parse time.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The docs are explicit on this: locking clauses on the outer query do not apply to WITH queries it references. FOR UPDATE has to be written inside the CTE that does the selecting, or the claim locks nothing at all.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Ten workers poll a jobs table every 100ms using <code>FOR UPDATE NOWAIT</code> instead of <code>SKIP LOCKED</code>. What would you expect for throughput and error rates as contention increases, compared to <code>SKIP LOCKED</code>?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>NOWAIT never blocks either, so under light contention throughput looks similar. But instead of silently moving to the next candidate row, every worker that loses the race to a given row gets an immediate <code>55P03</code> error on that poll — so under high contention the application is catching and handling that error on nearly every cycle, rather than SKIP LOCKED's quiet "no candidate here, try the next row." For a single-row <code>LIMIT 1</code> claim the two converge in effect, but NOWAIT pushes the branching logic into error handling instead of query semantics.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused in this entry — SOME calibration uses a definition list) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (two workers racing for a row) ────────
+    const steps = [
+      { activate: ['#node-a', '#node-b', '#node-row1', '#node-row2'],
+        explanation: 'Two workers poll the same jobs table with the same query: ORDER BY created_at LIMIT 1 FOR UPDATE ... — both target Row 1, the oldest pending job.' },
+      { activate: ['#node-a', '#node-row1', '#edge-a-row1'],
+        explanation: "Worker A's SELECT ... FOR UPDATE reaches Row 1 first and takes a row-level exclusive lock on it. Row 1 is now reserved for A until A's transaction ends." },
+      { activate: ['#node-a', '#node-row1', '#edge-a-row1', '#node-b', '#edge-b-row1', '#label-conflict'],
+        explanation: "Worker B's SELECT runs concurrently and also matches Row 1 — but it's already locked. This is the collision point. What Worker B does next depends entirely on which locking clause it used." },
+      { activate: ['#node-a', '#node-row1', '#edge-a-row1', '#node-b', '#edge-b-row1', '#badge-wait'],
+        explanation: 'Default behavior (plain FOR UPDATE): Worker B blocks and waits. It parks until A commits or rolls back, then re-checks Row 1 under EvalPlanQual before proceeding.' },
+      { activate: ['#node-a', '#node-row1', '#edge-a-row1', '#node-b', '#edge-b-row1', '#badge-nowait'],
+        explanation: 'FOR UPDATE NOWAIT: Worker B does not wait at all. It fails immediately with SQLSTATE 55P03 (lock_not_available), and the application must catch that and decide what to do.' },
+      { activate: ['#node-a', '#node-row1', '#edge-a-row1', '#node-b', '#node-row2', '#edge-b-row2', '#badge-skip'],
+        explanation: "FOR UPDATE SKIP LOCKED: Worker B doesn't wait or error — it silently skips the locked Row 1 and claims Row 2 instead. This is what lets ten workers run at close to ten times the throughput of one." },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'two-phase-locking': { title: 'Two-Phase Locking (2PL)', summary: "The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres's MVCC+strict-2PL hybrid." },
+      'deadlocks': { title: 'Deadlocks — Detection, Prevention & the Coffman Conditions', summary: 'The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.' },
+      'isolation-levels': { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'mvcc': { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'advisory-locks': { title: 'Advisory Locks — Application-Level Coordination Through the Database', summary: "Locks on application-invented integers that guard code, not data: the sign-up-sheet model, the singleton-cron case row locks can't solve, session-vs-transaction scope, the try/shared function matrix, key-space collisions, and the LIMIT dangling-lock trap." },
+      'optimistic-vs-pessimistic-locking': { title: 'Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length', summary: "Two answers to the application-level lost update: lock-first vs validate-at-write; Kung & Robinson's read/validate/write phases, why the version column is a compare-and-swap built on EvalPlanQual, the READ COMMITTED (0 rows) vs REPEATABLE READ (40001) split, the atomic-in-place third option, and the per-row blind spot (write skew, phantoms)." },
+      'sql-fundamentals': { title: 'SQL Fundamentals — Joins, Aggregations, Subqueries & CTEs', summary: 'Logical evaluation order as the master key; the cross-product join model with the ON-vs-WHERE silent-inner-join and fan-out double-counting traps, LATERAL top-N; GROUP BY grain change, WHERE-vs-HAVING, aggregate NULL skipping and FILTER; the NOT IN NULL trap vs NOT EXISTS; and CTEs with the Postgres 12 inlining rule, the recursive working-table algorithm, and one-snapshot data-modifying CTEs.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

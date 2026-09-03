@@ -5,8 +5,8 @@ topic: databases
 bloom-level: some
 created: 2026-08-31
 updated: 2026-09-01
-published: null
-related: [join-algorithms, sql-fundamentals, btree-indexes, composite-indexes, covering-indexes, buffer-pool, window-functions, explain-analyze]
+published: 2026-09-03
+related: [join-algorithms, sql-fundamentals, btree-indexes, composite-indexes, covering-indexes, buffer-pool, window-functions, explain-analyze, statistics-cardinality]
 tags: [query-planner, cost-based-optimizer, query-path, parser, query-tree, rewrite-system, view-expansion, path-vs-plan, plan-tree, executor, cost-model, startup-cost, total-cost, cardinality, selectivity, pg-class, reltuples, relpages, pg-statistic, pg-stats, analyze, default-statistics-target, geqo, geqo-threshold, join-ordering, system-r, selinger, dynamic-programming, predicate-pushdown, subquery-flattening, constant-folding, cte-inlining, volatile-function, column-independence-assumption, prepared-statement, generic-plan, custom-plan, plan-cache-mode, enable-seqscan, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — 52.1. The Path of a Query"

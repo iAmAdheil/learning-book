@@ -4,9 +4,9 @@ title: Table Bloat & Autovacuum — Reclaiming What MVCC Leaves Behind
 topic: databases
 bloom-level: some
 created: 2026-06-17
-updated: 2026-06-30
+updated: 2026-09-01
 published: 2026-06-30
-related: [mvcc, heap-storage-layout, covering-indexes, isolation-levels, write-ahead-log, buffer-pool]
+related: [mvcc, heap-storage-layout, covering-indexes, isolation-levels, write-ahead-log, buffer-pool, statistics-cardinality]
 tags: [vacuum, autovacuum, table-bloat, dead-tuple, vacuum-full, pg-repack, free-space-map, visibility-map, all-visible, all-frozen, freezing, xid-wraparound, relfrozenxid, oldest-xmin, anti-wraparound, replication-slot, reindex, planner-statistics, analyze, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — Routine Vacuuming"

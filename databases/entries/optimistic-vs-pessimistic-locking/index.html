@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Optimistic vs Pessimistic Locking — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Page-local diagram classes — theme-aware via the shared stylesheet's CSS vars.
+       Not added to the shared stylesheet; scoped to this entry only. */
+    .diagram-svg .lane-title { fill: var(--text); font-family: var(--font); font-size: 13px; font-weight: 700; }
+    .diagram-svg .lane-label { fill: var(--text-muted); font-family: var(--font); font-size: 11px; font-weight: 600; }
+    .diagram-svg .timeline { stroke: var(--border); stroke-width: 1.5; }
+    .diagram-svg .ot-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; rx: 6; }
+    .diagram-svg .ot-box-gap { fill: var(--surface); stroke: var(--text-muted); stroke-width: 1.25; stroke-dasharray: 4 3; rx: 6; }
+    .diagram-svg .ot-box-blocked { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.5; stroke-dasharray: 4 3; rx: 6; }
+    .diagram-svg .ot-box-success { fill: var(--good-soft); stroke: var(--good); stroke-width: 1.5; rx: 6; }
+    .diagram-svg .ot-box-conflict { fill: var(--bad-soft); stroke: var(--bad); stroke-width: 1.5; rx: 6; }
+    .diagram-svg .ot-text { fill: var(--text); font-family: var(--font); font-size: 10.5px; }
+    .diagram-svg .ot-text-good { fill: var(--good); font-family: var(--font); font-size: 10.5px; font-weight: 600; }
+    .diagram-svg .ot-text-bad { fill: var(--bad); font-family: var(--font); font-size: 10.5px; font-weight: 600; }
+    .diagram-svg .ot-text-muted { fill: var(--text-muted); font-family: var(--font); font-size: 10px; }
+    .diagram-svg .ot-arrow { stroke: var(--bad); stroke-width: 1.5; fill: none; }
+    .diagram-svg .ot-arrow-neutral { stroke: var(--text-muted); stroke-width: 1.25; fill: none; stroke-dasharray: 3 2; }
+    blockquote.entry-quote {
+      margin: 1rem 0;
+      padding: 0.75rem 1.1rem;
+      background: var(--surface-elev);
+      border-left: 3px solid var(--text-muted);
+      border-radius: 0 var(--radius) var(--radius) 0;
+      font-size: 0.92rem;
+      color: var(--text-muted);
+    }
+    blockquote.entry-quote cite { display: block; margin-top: 0.4rem; font-size: 0.8rem; font-style: normal; }
+    .decision-list li { margin: 0.4rem 0; }
+    .decision-list strong.verdict { color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">Optimistic and pessimistic locking are two answers to a hazard that a database's own isolation machinery does not solve: the <strong>read-modify-write cycle</strong> that runs in application code, where a second request can act on the same stale value before the first one writes back — the <strong>lost update</strong>. Pessimistic locking prevents the conflict with a lock taken at read time. Optimistic locking lets both sides proceed and detects the conflict at write time instead.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-working">Advanced</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">optimistic-locking</span>
+        <span class="badge tag">pessimistic-locking</span>
+        <span class="badge tag">occ</span>
+        <span class="badge tag">optimistic-concurrency-control</span>
+        <span class="badge tag">lost-update</span>
+        <span class="badge tag">read-modify-write</span>
+        <span class="badge tag">conflict-window</span>
+        <span class="badge tag">version-column</span>
+        <span class="badge tag">compare-and-swap</span>
+        <span class="badge tag">validation</span>
+        <span class="badge tag">evalplanqual</span>
+        <span class="badge tag">read-committed</span>
+        <span class="badge tag">repeatable-read</span>
+        <span class="badge tag">40001</span>
+        <span class="badge tag">serialization-failure</span>
+        <span class="badge tag">retry</span>
+        <span class="badge tag">exponential-backoff</span>
+        <span class="badge tag">starvation</span>
+        <span class="badge tag">livelock</span>
+        <span class="badge tag">write-skew</span>
+        <span class="badge tag">phantom</span>
+        <span class="badge tag">aba-problem</span>
+        <span class="badge tag">atomic-update</span>
+        <span class="badge tag">kung-robinson</span>
+        <span class="badge tag">jpa-version</span>
+        <span class="badge tag">sqlalchemy-version-id-col</span>
+        <span class="badge tag">connection-pool-exhaustion</span>
+        <span class="badge tag">idempotency</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-23 · Updated 2026-08-23</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components (Working calibration: collapsed) -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <details class="terms-collapsible">
+        <summary>Key Terms (review)</summary>
+        <dl class="term-dl">
+          <dt>Lost update</dt>
+          <dd>Two read-modify-write cycles interleave in application code and one write silently overwrites the other's committed change, with no error from the database.</dd>
+
+          <dt>Conflict window</dt>
+          <dd>The gap between an application's read and its later write. Its length — milliseconds for a service call, minutes for a human at a form — decides which strategy is even viable.</dd>
+
+          <dt>Version column (compare-and-swap)</dt>
+          <dd>An integer bumped on every successful write. The <code>UPDATE</code>'s <code>WHERE</code> clause re-checks it, so a writer working from a stale read matches zero rows instead of overwriting.</dd>
+
+          <dt>Kung &amp; Robinson's three phases</dt>
+          <dd>The 1981 optimistic-concurrency-control model: <strong>read</strong> (work on local copies), <strong>validate</strong> (check that no conflicting change occurred), <strong>write</strong> (publish only if validation passed).</dd>
+
+          <dt>EvalPlanQual</dt>
+          <dd>The Postgres mechanism that re-evaluates a blocked <code>UPDATE</code>'s <code>WHERE</code> clause against the newest committed row once the blocking transaction commits — the reason a version-column check is airtight under READ COMMITTED even without an explicit lock.</dd>
+        </dl>
+      </details>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Both strategies exist to close the same three-line gap:</p>
+      <pre><code class="lang-text">t0   app:  SELECT balance FROM accounts WHERE id=42   -> 1000
+t1   app:  compute in Go/Python: 1000 - 100 = 900
+t2   app:  UPDATE accounts SET balance = 900 WHERE id=42</code></pre>
+      <p>Between <code>t0</code> and <code>t2</code> the row is unguarded. A second request runs the same three steps, both read 1000, both write 900, and one withdrawal disappears.</p>
+
+      <h3>Pessimistic — lock before you look</h3>
+      <p><code>SELECT ... FOR UPDATE</code> takes a row-level exclusive lock at read time and holds it until <code>COMMIT</code>:</p>
+      <pre><code class="lang-sql">BEGIN;
+SELECT balance FROM accounts WHERE id = 42 FOR UPDATE;  -- others block HERE
+UPDATE accounts SET balance = balance - 100 WHERE id = 42;
+COMMIT;                                                  -- lock released</code></pre>
+      <p>Postgres's row-lock conflict matrix shows exactly which combinations wait:</p>
+      <table class="compare">
+        <thead><tr><th>Requested / Held</th><th>KEY SHARE</th><th>SHARE</th><th>NO KEY UPDATE</th><th>UPDATE</th></tr></thead>
+        <tbody>
+          <tr><td>FOR KEY SHARE</td><td data-score="92">—</td><td data-score="92">—</td><td data-score="92">—</td><td data-score="12">X (wait)</td></tr>
+          <tr><td>FOR SHARE</td><td data-score="92">—</td><td data-score="92">—</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td></tr>
+          <tr><td>FOR NO KEY UPDATE</td><td data-score="92">—</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td></tr>
+          <tr><td>FOR UPDATE</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td><td data-score="12">X (wait)</td></tr>
+        </tbody>
+      </table>
+      <p><code>FOR KEY SHARE</code> is what a foreign-key check takes — this is why an <code>INSERT</code> into a child table does not block an unrelated <code>UPDATE</code> on the parent row.</p>
+
+      <h3>Optimistic — do not lock, prove nothing changed</h3>
+      <p>A version column plays the role of Kung &amp; Robinson's validation phase:</p>
+      <pre><code class="lang-sql">ALTER TABLE accounts ADD COLUMN version integer NOT NULL DEFAULT 1;
+
+-- read phase: no lock, no open transaction, no held connection
+SELECT balance, version FROM accounts WHERE id = 42;   -- -> 1000, 7
+
+-- ... application computes 900. Minutes may pass. ...
+
+-- validation AND write, in one statement
+UPDATE accounts
+   SET balance = 900, version = version + 1
+ WHERE id = 42 AND version = 7;</code></pre>
+      <p><strong>1 row affected</strong> means nobody moved and validation passed. <strong>0 rows affected</strong> means someone committed since the read, validation failed, and the caller must discard and retry. The <code>AND version = 7</code> predicate <em>is</em> the validation phase, at the cost of one integer comparison and no lock.</p>
+      <p>Real code needs the retry loop built in:</p>
+      <pre><code class="lang-go">func withdraw(ctx context.Context, db *sql.DB, id int64, amt int) error {
+    const maxAttempts = 5
+    for attempt := 0; attempt < maxAttempts; attempt++ {
+        var balance, version int
+        err := db.QueryRowContext(ctx,
+            `SELECT balance, version FROM accounts WHERE id = $1`, id,
+        ).Scan(&balance, &version)
+        if err != nil {
+            return err
+        }
+
+        if balance < amt {
+            return ErrInsufficientFunds
+        }
+
+        res, err := db.ExecContext(ctx,
+            `UPDATE accounts SET balance = $1, version = version + 1
+              WHERE id = $2 AND version = $3`,
+            balance-amt, id, version)
+        if err != nil {
+            return err
+        }
+
+        if n, _ := res.RowsAffected(); n == 1 {
+            return nil
+        }
+        sleepWithJitter(attempt)   // 0 rows: someone else won. redo.
+    }
+    return ErrTooManyRetries
+}</code></pre>
+      <p>There is no <code>BEGIN</code>. Two autocommit statements with a gap between them, and the gap is safe — no transaction is held open and no connection is pinned, so the function stays correct even if the statements run minutes apart. In ORMs this is usually built in: Jakarta Persistence's <code>@Version</code> and SQLAlchemy's <code>version_id_col</code> both emit this exact pattern and raise on a zero rowcount.</p>
+
+      <h3>The third option — do not read at all</h3>
+      <p>If the new value is a function of the old value rather than a decision based on it, express it as a delta and the race disappears:</p>
+      <pre><code class="lang-sql">UPDATE accounts SET balance = balance - 100
+ WHERE id = 42 AND balance >= 100;
+-- 0 rows = insufficient funds, with no window between check and debit</code></pre>
+      <p>One statement, atomic under the row lock the database takes anyway. No version column, no <code>FOR UPDATE</code>, no retry loop needed — reach for this first, before either form of locking.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Both approaches solve the same read-modify-write gap, but they bet on opposite answers to one question: will another transaction enter that gap before you finish? Pessimistic locking bets yes and pays a lock's cost on every access to prevent it. Optimistic locking bets no, pays nothing on the happy path, and instead proves at write time that nobody else got there first. The load-bearing fact behind every choice below: the hazard is not the write, it is the <strong>duration of the gap</strong> — measured in application time, not database time.</p>
+
+      <table class="compare">
+        <thead><tr><th></th><th>Pessimistic</th><th>Optimistic</th></tr></thead>
+        <tbody>
+          <tr><td>Assumption</td><td>A conflict <strong>will</strong> happen</td><td>A conflict <strong>will not</strong> happen</td></tr>
+          <tr><td>Action</td><td>Prevent it — lock first</td><td>Detect it — validate at write time</td></tr>
+          <tr><td>Cost with no conflict</td><td>Wait + lock overhead, paid always</td><td>Nothing</td></tr>
+          <tr><td>Cost on conflict</td><td>Nothing extra — the other side waited</td><td>Whole transaction discarded and redone</td></tr>
+          <tr><td>Failure mode</td><td>Blocking, deadlock, pool exhaustion</td><td>Retry storms, starvation</td></tr>
+        </tbody>
+      </table>
+
+      <p>Follow the same two transactions, A and B, through both approaches below — watch exactly <em>where</em> each one catches the conflict.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 700 460" aria-label="Two timelines contrasting pessimistic locking, which converts a conflict into a queue at read time via a held lock, with optimistic locking, which lets both transactions proceed and catches the conflict at write time via a zero-row UPDATE">
+          <defs>
+            <marker id="arrowhead" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L6,3 L0,6 Z" fill="var(--bad)" />
+            </marker>
+          </defs>
+
+          <!-- ══ PESSIMISTIC PANEL ══ -->
+          <text x="16" y="24" class="lane-title">PESSIMISTIC — lock converts the race into a queue</text>
+          <text x="16" y="70" class="lane-label">Txn A</text>
+          <text x="16" y="130" class="lane-label">Txn B</text>
+          <line x1="70" y1="75" x2="660" y2="75" class="timeline" />
+          <line x1="70" y1="135" x2="660" y2="135" class="timeline" />
+
+          <g id="p-step1" class="step-el">
+            <rect x="80" y="58" width="140" height="34" class="ot-box" />
+            <text x="150" y="72" text-anchor="middle" class="ot-text">① FOR UPDATE</text>
+            <text x="150" y="85" text-anchor="middle" class="ot-text-muted">(lock taken by A)</text>
+          </g>
+
+          <g id="p-step2" class="step-el">
+            <rect x="80" y="118" width="390" height="34" class="ot-box-blocked" />
+            <text x="275" y="132" text-anchor="middle" class="ot-text-bad">② Txn B: BLOCKED</text>
+            <text x="275" y="145" text-anchor="middle" class="ot-text-muted">waiting for A's lock</text>
+          </g>
+
+          <g id="p-step3" class="step-el">
+            <rect x="230" y="58" width="130" height="34" class="ot-box" />
+            <text x="295" y="72" text-anchor="middle" class="ot-text">③ UPDATE</text>
+            <text x="295" y="85" text-anchor="middle" class="ot-text-muted">balance</text>
+            <rect x="370" y="58" width="100" height="34" class="ot-box" />
+            <text x="420" y="72" text-anchor="middle" class="ot-text">④ COMMIT</text>
+            <text x="420" y="85" text-anchor="middle" class="ot-text-muted">releases lock</text>
+            <path d="M420,92 L420,118" class="ot-arrow-neutral" marker-end="url(#arrowhead)" />
+          </g>
+
+          <g id="p-step4" class="step-el">
+            <rect x="480" y="118" width="180" height="34" class="ot-box-success" />
+            <text x="570" y="132" text-anchor="middle" class="ot-text-good">⑤ B unblocks, updates,</text>
+            <text x="570" y="145" text-anchor="middle" class="ot-text-good">commits — no conflict</text>
+          </g>
+
+          <!-- ══ OPTIMISTIC PANEL ══ -->
+          <text x="16" y="200" class="lane-title">OPTIMISTIC — conflict detected at write time</text>
+          <text x="16" y="252" class="lane-label">Txn A</text>
+          <text x="16" y="312" class="lane-label">Txn B</text>
+          <line x1="70" y1="255" x2="660" y2="255" class="timeline" />
+          <line x1="70" y1="315" x2="660" y2="315" class="timeline" />
+
+          <g id="o-step1" class="step-el">
+            <rect x="80" y="238" width="150" height="34" class="ot-box" />
+            <text x="155" y="252" text-anchor="middle" class="ot-text">① SELECT balance,</text>
+            <text x="155" y="265" text-anchor="middle" class="ot-text-muted">version — no lock</text>
+            <rect x="80" y="298" width="150" height="34" class="ot-box" />
+            <text x="155" y="312" text-anchor="middle" class="ot-text">① SELECT balance,</text>
+            <text x="155" y="325" text-anchor="middle" class="ot-text-muted">version — no lock</text>
+            <text x="155" y="228" text-anchor="middle" class="ot-text-muted">both read version = 7</text>
+          </g>
+
+          <g id="o-step2" class="step-el">
+            <rect x="250" y="238" width="150" height="34" class="ot-box-gap" />
+            <text x="325" y="256" text-anchor="middle" class="ot-text-muted">② app computes —</text>
+            <text x="325" y="268" text-anchor="middle" class="ot-text-muted">gap (ms to minutes)</text>
+            <rect x="250" y="298" width="150" height="34" class="ot-box-gap" />
+            <text x="325" y="316" text-anchor="middle" class="ot-text-muted">② app computes —</text>
+            <text x="325" y="328" text-anchor="middle" class="ot-text-muted">gap (ms to minutes)</text>
+          </g>
+
+          <g id="o-step3" class="step-el">
+            <rect x="420" y="238" width="220" height="34" class="ot-box-success" />
+            <text x="530" y="252" text-anchor="middle" class="ot-text-good">③ UPDATE ... WHERE version=7</text>
+            <text x="530" y="265" text-anchor="middle" class="ot-text-good">→ 1 row. version becomes 8.</text>
+          </g>
+
+          <g id="o-step4" class="step-el">
+            <rect x="420" y="298" width="220" height="34" class="ot-box-conflict" />
+            <text x="530" y="312" text-anchor="middle" class="ot-text-bad">④ UPDATE ... WHERE version=7</text>
+            <text x="530" y="325" text-anchor="middle" class="ot-text-bad">→ 0 rows — CONFLICT HERE</text>
+            <path d="M530,332 C530,400 155,400 155,332" class="ot-arrow" marker-end="url(#arrowhead)" />
+            <text x="342" y="415" text-anchor="middle" class="ot-text-muted">retry: redo the read phase</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+
+      <h3>Choosing between them</h3>
+      <p>Work down this list. The first rule that fires decides it.</p>
+      <ol class="decision-list">
+        <li>Does the conflict window span human think time (a form left open for minutes)? → <strong class="verdict">Optimistic, always</strong> — a transaction and its pooled connection cannot stay open across a coffee break.</li>
+        <li>Can the update be expressed as an atomic in-place statement? → do that instead of either lock.</li>
+        <li>Is contention on a single row high (last unit of stock, a global counter)? → <strong class="verdict">Pessimistic</strong> — optimistic degrades badly here: everyone computes, one commits, the rest discard the work.</li>
+        <li>Is the work between read and write expensive to redo (a paid API call, a long computation)? → <strong class="verdict">Pessimistic</strong>, or restructure so the expensive part sits outside the transaction.</li>
+        <li>Otherwise — rare conflicts, cheap redo. → <strong class="verdict">Optimistic</strong>. This is most CRUD.</li>
+      </ol>
+      <p>One-line crossover: optimistic wins while <code>P(conflict) × cost(retry)</code> stays below <code>cost(waiting)</code>. Both sides are measurable — ship optimistic with a retry counter in your metrics and read the conflict rate after a week.</p>
+
+      <blockquote class="entry-quote">It depends on the conflict rate and how long the read-to-write window is. Pessimistic pays a fixed cost on every access to avoid a rare failure, and it holds a transaction — and therefore a pooled connection — open for the whole window, so it does not work at all when a human is in the loop. Optimistic pays nothing on the happy path but discards the work on conflict, so it degrades under contention. Rare conflicts or a long window: optimistic. Hot contended row or expensive-to-redo work: pessimistic. And first check whether the update can be expressed atomically in one statement, because then neither is needed.<cite>— the interview answer, compressed</cite></blockquote>
+    </section>
+
+    <!-- Section 5: Deeper (Working calibration: expanded, no <details> wrapper) -->
+    <section id="deeper">
+      <h2>Deeper — Edge Cases &amp; Gotchas</h2>
+
+      <h3>Why the version column is airtight — the EvalPlanQual mechanism</h3>
+      <p>Two writers both read <code>version = 7</code> and both fire the <code>UPDATE</code>. Exactly one wins, although neither took an explicit lock. A bare <code>UPDATE</code> is not lock-free internally — it takes a <code>FOR NO KEY UPDATE</code> row lock on every row it touches. Writer A locks the row, sets <code>version = 8</code>, and commits. Writer B's <code>UPDATE</code> blocked on A's lock; once A commits, B unblocks and, under READ COMMITTED, Postgres runs <strong>EvalPlanQual</strong>: it fetches the newest committed version of the row and re-evaluates the <code>WHERE</code> clause against it. The newest row has <code>version = 8</code>, the predicate demands <code>version = 7</code>, and the row drops out of the update set — B reports 0 rows. The version column converts the database's internal row lock into an application-visible compare-and-swap. Sequence worth memorizing: <strong>block → winner commits → re-fetch newest row → re-evaluate predicate → 0 rows.</strong></p>
+
+      <h3>How the loser finds out depends on the isolation level</h3>
+      <p>Under READ COMMITTED the losing <code>UPDATE</code> does not abort and raises no exception — it returns <code>rowcount = 0</code> and the program continues silently. Under REPEATABLE READ there is no EvalPlanQual re-check, because that would mean looking at a row committed after the transaction's snapshot began — a promise REPEATABLE READ has already made not to break. Postgres instead aborts and raises <code>SQLSTATE 40001</code>.</p>
+      <table class="compare">
+        <thead><tr><th></th><th>How the loser finds out</th><th>What the code must do</th></tr></thead>
+        <tbody>
+          <tr><td>READ COMMITTED</td><td>Silence — <code>rowcount = 0</code></td><td>Check the rowcount. Re-run from the read.</td></tr>
+          <tr><td>REPEATABLE READ / SERIALIZABLE</td><td>Loud — <code>SQLSTATE 40001</code></td><td>Catch <code>40001</code>. Restart the whole transaction from <code>BEGIN</code>.</td></tr>
+        </tbody>
+      </table>
+      <p>The second column matters more than it looks: under REPEATABLE READ the snapshot is poisoned — every value read in that transaction is frozen at a moment now invalidated — so re-running only the <code>UPDATE</code> would validate against stale reads. See <a href="../isolation-levels/index.html">isolation levels</a> for the full anomaly-by-level picture.</p>
+
+      <h3>Why a timestamp is a bad version token</h3>
+      <p>Three failure modes, and the third is the one that actually happens in production. <strong>(a) The clock is coarser than the write rate</strong> — MySQL's default <code>DATETIME</code> stores whole seconds, so two writes in the same second share a token and validation cannot tell them apart. <strong>(b) The clock moves backwards</strong> across instances under NTP correction, which reintroduces the <strong>ABA problem</strong>: a value returns to an earlier observed state, so an equality check reports "unchanged" when two changes actually occurred. A monotonic integer counter cannot do this. <strong>(c) Something changed the row without bumping the column</strong> — a migration, a manual fix, a backfill — so the token stays put while the data moves, and every future validation passes against stale data. A version column is not immune to (c), but a <code>BEFORE UPDATE</code> trigger can enforce <code>version = version + 1</code> structurally; no equivalent guarantee can be placed on a timestamp a caller sets explicitly.</p>
+
+      <h3>Livelock under a flash sale</h3>
+      <p>Throughput can collapse to near zero on a hot row with no errors and no slow queries in the logs — this is <strong>livelock</strong>, not deadlock. Nothing waits, no cycle exists; every transaction runs at full speed, but everyone reads the same token, one wins, and the rest discard their work and re-enter the same race. Every individual statement is fast and succeeds, so the monitoring stack reports a healthy database while useful throughput is zero — doing work and throwing it away looks identical to doing work at every layer that measures queries. Unlike a lock queue, which is roughly FIFO, optimistic retry has no queue: a transaction with a longer compute phase has a wider window to lose in, so it can be repeatedly beaten by faster newcomers. Fixes, in order: move the hot row to pessimistic locking (turns the stampede into a bounded queue); better, remove the read-modify-write entirely (an inventory decrement collapses to one atomic <code>UPDATE ... WHERE stock > 0</code>); and instrument a retry-attempt counter regardless, since it is the only signal that surfaces this failure mode.</p>
+
+      <h3>The per-row blind spot — write skew and phantoms</h3>
+      <p>A version column protects a row, so it is blind to any invariant defined over a <em>set</em> of rows. <strong>Write skew:</strong> if "the sum of line items must equal the order total" and transaction A edits item 1 while transaction B edits item 2, each validates perfectly — neither row was touched by anyone else — yet both commit and the total is now wrong. This fails for the same reason it fails under snapshot isolation: the conflict is between rows, not on one. <strong>Phantoms:</strong> two requests both check "is room 4 free at 3pm?", both find nothing, both <code>INSERT</code> — there is no row to carry a version, so there is nothing to validate against. Fixes all operate above the row: a unique or exclusion constraint pushes the invariant into the database regardless of concurrency; SERIALIZABLE's predicate locks catch exactly these read-write dependencies; or an explicit lock on a parent row (or an <a href="../advisory-locks/index.html">advisory lock</a> key, when no natural parent row exists) manufactures a single serialization point for the whole set.</p>
+
+      <div class="antipattern">
+        <strong>Anti-pattern:</strong> holding a pessimistic lock across a network call.
+        <pre><code class="lang-sql">BEGIN;
+SELECT balance FROM accounts WHERE id = 42 FOR UPDATE;  -- lock taken
+-- call the payment gateway over the network here
+UPDATE accounts SET balance = balance - 100 WHERE id = 42;
+COMMIT;</code></pre>
+        <p>The row stays locked for the gateway's full latency, and for the statement timeout if the gateway hangs. This is the most common way <code>FOR UPDATE</code> turns into an outage — everyone else waiting on that row waits on the network call too.</p>
+      </div>
+
+      <h3>What else breaks in production</h3>
+      <ul>
+        <li><strong>The rowcount check is not defensive programming — it is the concurrency control.</strong> An <code>UPDATE</code> matching 0 rows is a success to the database driver. Code that ignores the rowcount detects nothing, with no symptom until an audit finds a lost update.</li>
+        <li><strong>Retry needs idempotency.</strong> The transaction rolled back cleanly, but an external call inside it — a payment charge — did not. Anything with a side effect must move outside the retry boundary or carry an idempotency key.</li>
+        <li><strong>Retry needs a cap and jittered backoff.</strong> An uncapped retry loop under contention is a self-inflicted denial of service: failures cause retries, retries raise contention, contention causes more failures. Cap at 3–5 attempts, then surface the failure.</li>
+        <li><strong><code>FOR UPDATE</code> on multiple rows without <code>ORDER BY</code></strong> deadlocks when two transactions lock the same set in different orders — see <a href="../deadlocks/index.html">deadlocks</a>.</li>
+      </ul>
+    </section>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../select-for-update-skip-locked/index.html" data-entry="select-for-update-skip-locked">
+        <strong>SELECT FOR UPDATE &amp; SKIP LOCKED</strong>
+        <span>Pessimistic locking in practice — the full lock-strength matrix, wait/NOWAIT/SKIP LOCKED policies, and the job-queue pattern this entry only sketches.</span>
+      </a>
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC</strong>
+        <span>Why the lost update exists at all: a plain SELECT takes no lock and reads a snapshot that is correct when taken but stale by the time the application acts on it.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>The READ COMMITTED-vs-REPEATABLE READ split in how a losing UPDATE fails — silent 0 rows versus a loud 40001 — follows directly from each level's snapshot rules.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>The general pessimistic protocol that SELECT ... FOR UPDATE is one instance of — its growing/shrinking-phase rule is what makes a held row lock serializable.</span>
+      </a>
+      <a class="related-card" href="../deadlocks/index.html" data-entry="deadlocks">
+        <strong>Deadlocks — Detection, Prevention &amp; the Coffman Conditions</strong>
+        <span>FOR UPDATE on multiple rows without a consistent ORDER BY is exactly the hold-and-wait pattern that produces a deadlock.</span>
+      </a>
+      <a class="related-card" href="../advisory-locks/index.html" data-entry="advisory-locks">
+        <strong>Advisory Locks</strong>
+        <span>When no natural row exists to lock — a multi-row invariant, or a row that does not exist yet — an advisory-lock key manufactures the serialization point a version column cannot provide.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://dl.acm.org/doi/10.1145/319566.319567" target="_blank" rel="noopener">Kung &amp; Robinson, On Optimistic Methods for Concurrency Control, ACM TODS 6(2), June 1981, pp. 213-226</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html" target="_blank" rel="noopener">PostgreSQL Documentation — Explicit Locking (13.3. Row-Level Locks)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/applevel-consistency.html" target="_blank" rel="noopener">PostgreSQL Documentation — Application-Level Data Integrity Checks (13.4)</a> — cited in source research</li>
+          <li><a href="https://jakarta.ee/specifications/persistence/3.2/apidocs/jakarta.persistence/jakarta/persistence/version" target="_blank" rel="noopener">Jakarta Persistence 3.2 — @Version</a> — cited in source research</li>
+          <li><a href="https://docs.sqlalchemy.org/en/20/orm/versioning.html" target="_blank" rel="noopener">SQLAlchemy 2.0 — Configuring a Version Counter</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall (Working calibration: open-ended only, no reveal) -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="recall-open">
+        <ol>
+          <li>You are validating a multi-row invariant — "the sum of line items equals the order total" — with a version column on each line-item row. Trace what happens when two transactions each edit a different line item concurrently: why does the version check pass on both sides, and what would you add to catch this?</li>
+          <li>A hot single-row counter under flash-sale load shows zero errors, zero slow queries, and near-zero useful throughput. Walk through why optimistic locking produces exactly this symptom profile, and describe what you would look at in your metrics — before touching any code — to decide whether to move that row to pessimistic locking.</li>
+        </ol>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (none on this entry — kept for template parity) ─
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz (none on this entry — kept for template parity) ─
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (PESSIMISTIC vs OPTIMISTIC timelines) ─
+    const steps = [
+      { activate: ['#p-step1'],
+        explanation: 'Pessimistic: Txn A runs SELECT ... FOR UPDATE and takes a row-level exclusive lock at read time, before it has computed anything.' },
+      { activate: ['#p-step1', '#p-step2'],
+        explanation: 'Txn B sends the identical request and blocks immediately. The lock has converted the conflict from a race into a queue — B cannot even start computing yet.' },
+      { activate: ['#p-step1', '#p-step2', '#p-step3'],
+        explanation: 'Txn A updates the balance and commits. Only at commit does it release the lock — this is the whole cost of pessimistic locking: the lock is held for the entire transaction, not just the write.' },
+      { activate: ['#p-step1', '#p-step2', '#p-step3', '#p-step4'],
+        explanation: 'Txn B unblocks, reads the now-fresh committed value, and proceeds. Nobody ever computed against a stale value — the conflict was prevented at read time, not detected later.' },
+      { activate: ['#o-step1'],
+        explanation: 'Optimistic: both A and B run a plain SELECT with no lock at all. Both read balance=1000, version=7, at the same time, with no queueing.' },
+      { activate: ['#o-step1', '#o-step2'],
+        explanation: 'Application time passes between read and write — milliseconds for a service call, or minutes for a human at a form. Nothing is held open in the database during this gap.' },
+      { activate: ['#o-step1', '#o-step2', '#o-step3'],
+        explanation: 'Txn A’s UPDATE ... WHERE version = 7 reaches the row first and matches 1 row. Validation passed — the row’s version becomes 8.' },
+      { activate: ['#o-step1', '#o-step2', '#o-step3', '#o-step4'],
+        explanation: 'Txn B’s identical UPDATE ... WHERE version = 7 now matches 0 rows, because the row’s version is already 8. This is where optimistic locking catches the conflict — at write time, not read time. B discards its work and retries from the read phase.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'select-for-update-skip-locked': { title: 'SELECT FOR UPDATE & SKIP LOCKED — Row Locks and the Postgres Job Queue', summary: 'Read-and-reserve via row-level exclusive locks: the lost-update race MVCC leaves open, the four lock strengths + conflict matrix, wait/NOWAIT/SKIP LOCKED policies, the CTE job-queue claim, and READ COMMITTED\'s EvalPlanQual re-check.' },
+      'mvcc': { title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control', summary: 'Version-stamped tuples (xmin/xmax/ctid chain), the xmin:xmax:xip snapshot, visibility rules + clog, hint bits (reads that write), HOT updates, and the OldestXmin horizon.' },
+      'isolation-levels': { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'two-phase-locking': { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres\'s MVCC+strict-2PL hybrid.' },
+      'deadlocks': { title: 'Deadlocks — Detection, Prevention & the Coffman Conditions', summary: 'The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.' },
+      'advisory-locks': { title: 'Advisory Locks — Application-Level Coordination Through the Database', summary: 'Locks on application-invented integers that guard code, not data: the sign-up-sheet model, the singleton-cron case row locks can\'t solve, session-vs-transaction scope, the try/shared function matrix, key-space collisions, and the LIMIT dangling-lock trap.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

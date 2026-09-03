@@ -5,8 +5,8 @@ topic: databases
 bloom-level: some
 created: 2026-08-24
 updated: 2026-09-01
-published: null
-related: [sql-fundamentals, window-functions, btree-indexes, composite-indexes, covering-indexes, buffer-pool, heap-storage-layout, clustered-vs-nonclustered-indexes, query-planning, explain-analyze]
+published: 2026-09-03
+related: [sql-fundamentals, window-functions, btree-indexes, composite-indexes, covering-indexes, buffer-pool, heap-storage-layout, clustered-vs-nonclustered-indexes, query-planning, explain-analyze, statistics-cardinality]
 tags: [join-algorithms, nested-loop-join, hash-join, merge-join, query-planner, cost-based-optimizer, inner-relation, outer-relation, build-phase, probe-phase, batching, spill-to-disk, work-mem, hash-mem-multiplier, sort-merge, index-scan, memoize, materialize, equijoin, range-join, full-outer-join, cardinality-estimation, row-estimate, plan-regression, seq-page-cost, random-page-cost, geqo, geqo-threshold, join-ordering, selinger, n-plus-1, enable-nestloop, enable-hashjoin, enable-mergejoin, interview-priority]
 sources:
   - title: "PostgreSQL Documentation — 52.5. Planner/Optimizer"

@@ -19,7 +19,7 @@
       <a class="back-link" href="../global-index.html">⊞ All topics</a>
     </div>
     <h1>databases</h1>
-    <p class="subtitle">13 entries · last updated 2026-06-15</p>
+    <p class="subtitle">26 entries · last updated 2026-09-03</p>
     <div class="controls">
       <input class="search" type="search" placeholder="Search entries…" aria-label="Search entries" />
       <div class="tag-filter" role="group" aria-label="Filter by tag">
@@ -50,6 +50,20 @@
         <button class="tag-chip" data-tag="vacuum">vacuum</button>
         <button class="tag-chip" data-tag="buffer-pool">buffer-pool</button>
         <button class="tag-chip" data-tag="interview-priority">interview-priority</button>
+                <button class="tag-chip" data-tag="advisory-lock">advisory-lock</button>
+        <button class="tag-chip" data-tag="distributed-lock">distributed-lock</button>
+        <button class="tag-chip" data-tag="explain-analyze">explain-analyze</button>
+        <button class="tag-chip" data-tag="query-plan">query-plan</button>
+        <button class="tag-chip" data-tag="join-algorithms">join-algorithms</button>
+        <button class="tag-chip" data-tag="hash-join">hash-join</button>
+        <button class="tag-chip" data-tag="nested-loop">nested-loop</button>
+        <button class="tag-chip" data-tag="optimistic-locking">optimistic-locking</button>
+        <button class="tag-chip" data-tag="pessimistic-locking">pessimistic-locking</button>
+        <button class="tag-chip" data-tag="query-planner">query-planner</button>
+        <button class="tag-chip" data-tag="select-for-update">select-for-update</button>
+        <button class="tag-chip" data-tag="skip-locked">skip-locked</button>
+        <button class="tag-chip" data-tag="sql">sql</button>
+        <button class="tag-chip" data-tag="window-function">window-function</button>
         <button class="tag-chip clear" data-tag="">clear</button>
       </div>
       <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
@@ -57,6 +71,150 @@
   </header>
 
   <main class="entries-grid" id="entries-grid">
+    <a class="entry-card" href="entries/explain-analyze/index.html"
+       data-tags="explain explain-analyze query-plan plan-tree startup-cost total-cost estimated-rows actual-rows width loops per-loop-averages rows-removed-by-filter buffers shared-hit shared-read planning-time execution-time seq-scan index-scan index-only-scan bitmap-heap-scan recheck-cond heap-fetches nested-loop hash-join merge-join batches external-merge sort-method work-mem timing-off generic-plan format-json verbose settings wal side-effects rollback interview-priority"
+       data-title="explain &amp; explain analyze — reading query plans in practice"
+       data-desc="reading intent against reality: the node anatomy, costs being cumulative upward and actual time/rows being per-loop averages that must be multiplied by loops, the diagnostic order (find the lowest node where estimated and actual rows diverge), the scan-node vocabulary including bitmap heap scan and heap fetches, the buffers/settings/generic_plan options, and a worked plan traced from a 4000x top-level gap down to the composite index that actually fixes it.">
+      <h2 class="entry-title">EXPLAIN &amp; EXPLAIN ANALYZE — Reading Query Plans in Practice</h2>
+      <p class="entry-desc">Reading intent against reality: the node anatomy, costs being cumulative upward and actual time/rows being per-loop averages that must be multiplied by loops, the diagnostic order (find the LOWEST node where estimated and actual rows diverge), the scan-node vocabulary including Bitmap Heap Scan and Heap Fetches, the BUFFERS/SETTINGS/GENERIC_PLAN options, and a worked plan traced from a 4000x top-level gap down to the composite index that actually fixes it.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">explain</span>
+        <span class="badge tag">explain-analyze</span>
+        <span class="badge tag">query-plan</span>
+        <span class="badge tag">plan-tree</span>
+        <span class="badge tag">startup-cost</span>
+        <span class="badge related">↔ 9</span>
+        <span class="meta-dates">2026-09-01</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/query-planning/index.html"
+       data-tags="query-planner cost-based-optimizer query-path parser query-tree rewrite-system view-expansion path-vs-plan plan-tree executor cost-model startup-cost total-cost cardinality selectivity pg-class reltuples relpages pg-statistic pg-stats analyze default-statistics-target geqo geqo-threshold join-ordering system-r selinger dynamic-programming predicate-pushdown subquery-flattening constant-folding cte-inlining volatile-function column-independence-assumption prepared-statement generic-plan custom-plan plan-cache-mode enable-seqscan interview-priority"
+       data-title="query planning &amp; optimization — how the database picks a plan"
+       data-desc="the planner as a search engine with a cost function, not a translator: the parser/rewriter/planner/executor path (and why a view is a pre-planning substitution), paths vs plans, the startup..total cost pair that explains limit flips, cost as arithmetic on top of cardinality, the system r bottom-up search and the geqo threshold, the transformations it applies for you, the six things it cannot do, and the estimate-vs-cost-model split that decides every fix.">
+      <h2 class="entry-title">Query Planning &amp; Optimization — How the Database Picks a Plan</h2>
+      <p class="entry-desc">The planner as a search engine with a cost function, not a translator: the parser/rewriter/planner/executor path (and why a view is a pre-planning substitution), paths vs plans, the startup..total cost pair that explains LIMIT flips, cost as arithmetic on top of cardinality, the System R bottom-up search and the geqo threshold, the transformations it applies for you, the six things it cannot do, and the estimate-vs-cost-model split that decides every fix.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">query-planner</span>
+        <span class="badge tag">cost-based-optimizer</span>
+        <span class="badge tag">query-path</span>
+        <span class="badge tag">parser</span>
+        <span class="badge tag">query-tree</span>
+        <span class="badge related">↔ 9</span>
+        <span class="meta-dates">2026-09-01</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/sql-fundamentals/index.html"
+       data-tags="sql select join inner-join left-join outer-join cross-join cartesian-product on-vs-where using natural-join lateral join-fan-out aggregation group-by having count-star filter-clause conditional-aggregation null-semantics three-valued-logic subquery scalar-subquery correlated-subquery exists not-exists not-in-trap any-all anti-join semi-join cte with-query materialized not-materialized optimization-fence recursive-cte working-table data-modifying-cte returning logical-evaluation-order alias-scope grouping-sets rollup cube interview-priority"
+       data-title="sql fundamentals — joins, aggregations, subqueries &amp; ctes"
+       data-desc="logical evaluation order as the master key; the cross-product join model with the on-vs-where silent-inner-join and fan-out double-counting traps, lateral top-n; group by grain change, where-vs-having, aggregate null skipping and filter; the not in null trap vs not exists; and ctes with the postgres 12 inlining rule, the recursive working-table algorithm, and one-snapshot data-modifying ctes.">
+      <h2 class="entry-title">SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</h2>
+      <p class="entry-desc">Logical evaluation order as the master key; the cross-product join model with the ON-vs-WHERE silent-inner-join and fan-out double-counting traps, LATERAL top-N; GROUP BY grain change, WHERE-vs-HAVING, aggregate NULL skipping and FILTER; the NOT IN NULL trap vs NOT EXISTS; and CTEs with the Postgres 12 inlining rule, the recursive working-table algorithm, and one-snapshot data-modifying CTEs.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">sql</span>
+        <span class="badge tag">select</span>
+        <span class="badge tag">join</span>
+        <span class="badge tag">inner-join</span>
+        <span class="badge tag">left-join</span>
+        <span class="badge related">↔ 12</span>
+        <span class="meta-dates">2026-09-01</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/join-algorithms/index.html"
+       data-tags="join-algorithms nested-loop-join hash-join merge-join query-planner cost-based-optimizer inner-relation outer-relation build-phase probe-phase batching spill-to-disk work-mem hash-mem-multiplier sort-merge index-scan memoize materialize equijoin range-join full-outer-join cardinality-estimation row-estimate plan-regression seq-page-cost random-page-cost geqo geqo-threshold join-ordering selinger n-plus-1 enable-nestloop enable-hashjoin enable-mergejoin interview-priority"
+       data-title="join algorithms — nested loop, hash join &amp; merge join"
+       data-desc="three answers to one lookup question: nested loop (o(n*m), but o(n*log m) and unbeatable with a small indexed inner side — and structurally the n+1 in the right place), hash join (o(n+m), equality only, with the work_mem x hash_mem_multiplier cliff and batches&gt;1 spill signal), and merge join (free when an index supplies the order, and the only other option for range joins); plus the row-estimate cliff that makes a wrong nested loop degrade without bound, the enable_* switches as diagnostics, and geqo join ordering.">
+      <h2 class="entry-title">Join Algorithms — Nested Loop, Hash Join &amp; Merge Join</h2>
+      <p class="entry-desc">Three answers to one lookup question: nested loop (O(N*M), but O(N*log M) and unbeatable with a small indexed inner side — and structurally the N+1 in the right place), hash join (O(N+M), equality only, with the work_mem x hash_mem_multiplier cliff and Batches&gt;1 spill signal), and merge join (free when an index supplies the order, and the only other option for range joins); plus the row-estimate cliff that makes a wrong nested loop degrade without bound, the enable_* switches as diagnostics, and geqo join ordering.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">join-algorithms</span>
+        <span class="badge tag">nested-loop-join</span>
+        <span class="badge tag">hash-join</span>
+        <span class="badge tag">merge-join</span>
+        <span class="badge tag">query-planner</span>
+        <span class="badge related">↔ 11</span>
+        <span class="meta-dates">2026-09-01</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/window-functions/index.html"
+       data-tags="sql window-function over-clause partition-by order-by frame-clause rows-vs-range groups-mode default-frame peer-group unbounded-preceding current-row unbounded-following exclude-current-row row-number rank dense-rank percent-rank cume-dist ntile lag lead first-value last-value nth-value running-total moving-average top-n-per-group gaps-and-islands sessionization deduplication named-window distinct-on percentile-cont percentile-disc logical-evaluation-order qualify interview-priority"
+       data-title="window functions — rank, row_number, lag/lead, partitions &amp; frames"
+       data-desc="aggregate without collapsing the row: why window functions can&#x27;t appear in where (they run after it) and the cte-wrapper that follows; row_number/rank/dense_rank tie behaviour and top-n-per-group; lag/lead with the flag-then-running-sum sessionization and gaps-and-islands idioms; and frames — the range default, peer groups, the stalled running total, the last_value trap, and rows-vs-range as &#x27;last 7 rows&#x27; vs &#x27;last 7 days&#x27;.">
+      <h2 class="entry-title">Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions &amp; Frames</h2>
+      <p class="entry-desc">Aggregate without collapsing the row: why window functions can&#x27;t appear in WHERE (they run after it) and the CTE-wrapper that follows; ROW_NUMBER/RANK/DENSE_RANK tie behaviour and top-N-per-group; LAG/LEAD with the flag-then-running-SUM sessionization and gaps-and-islands idioms; and frames — the RANGE default, peer groups, the stalled running total, the LAST_VALUE trap, and ROWS-vs-RANGE as &#x27;last 7 rows&#x27; vs &#x27;last 7 days&#x27;.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">sql</span>
+        <span class="badge tag">window-function</span>
+        <span class="badge tag">over-clause</span>
+        <span class="badge tag">partition-by</span>
+        <span class="badge tag">order-by</span>
+        <span class="badge related">↔ 8</span>
+        <span class="meta-dates">2026-08-31</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/optimistic-vs-pessimistic-locking/index.html"
+       data-tags="transactions optimistic-locking pessimistic-locking occ optimistic-concurrency-control lost-update read-modify-write conflict-window version-column compare-and-swap validation evalplanqual read-committed repeatable-read 40001 serialization-failure retry exponential-backoff starvation livelock write-skew phantom aba-problem atomic-update kung-robinson jpa-version sqlalchemy-version-id-col connection-pool-exhaustion idempotency interview-priority"
+       data-title="optimistic vs pessimistic locking — choosing by conflict rate and window length"
+       data-desc="two answers to the application-level lost update: lock-first vs validate-at-write; kung &amp; robinson&#x27;s read/validate/write phases, why the version column is a compare-and-swap built on evalplanqual, the read committed (0 rows) vs repeatable read (40001) split, the atomic-in-place third option, and the per-row blind spot (write skew, phantoms).">
+      <h2 class="entry-title">Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length</h2>
+      <p class="entry-desc">Two answers to the application-level lost update: lock-first vs validate-at-write; Kung &amp; Robinson&#x27;s read/validate/write phases, why the version column is a compare-and-swap built on EvalPlanQual, the READ COMMITTED (0 rows) vs REPEATABLE READ (40001) split, the atomic-in-place third option, and the per-row blind spot (write skew, phantoms).</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-working">Advanced</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">optimistic-locking</span>
+        <span class="badge tag">pessimistic-locking</span>
+        <span class="badge tag">occ</span>
+        <span class="badge tag">optimistic-concurrency-control</span>
+        <span class="badge related">↔ 6</span>
+        <span class="meta-dates">2026-08-23</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/select-for-update-skip-locked/index.html"
+       data-tags="transactions select-for-update skip-locked nowait row-level-lock for-share for-key-share for-no-key-update job-queue work-queue lost-update read-modify-write evalplanqual read-committed repeatable-read 40001 pessimistic-locking interview-priority"
+       data-title="select for update &amp; skip locked — row locks and the postgres job queue"
+       data-desc="read-and-reserve via row-level exclusive locks: the lost-update race mvcc leaves open, the four lock strengths + conflict matrix, wait/nowait/skip locked policies, the cte job-queue claim, and read committed&#x27;s evalplanqual re-check.">
+      <h2 class="entry-title">SELECT FOR UPDATE &amp; SKIP LOCKED — Row Locks and the Postgres Job Queue</h2>
+      <p class="entry-desc">Read-and-reserve via row-level exclusive locks: the lost-update race MVCC leaves open, the four lock strengths + conflict matrix, wait/NOWAIT/SKIP LOCKED policies, the CTE job-queue claim, and READ COMMITTED&#x27;s EvalPlanQual re-check.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">select-for-update</span>
+        <span class="badge tag">skip-locked</span>
+        <span class="badge tag">nowait</span>
+        <span class="badge tag">row-level-lock</span>
+        <span class="badge related">↔ 7</span>
+        <span class="meta-dates">2026-08-24</span>
+      </div>
+    </a>
+
+    <a class="entry-card" href="entries/advisory-locks/index.html"
+       data-tags="transactions advisory-lock pg-advisory-lock pg-try-advisory-lock pg-advisory-xact-lock session-level-lock transaction-level-lock mutual-exclusion distributed-lock leader-election cron-singleton pg-locks max-locks-per-transaction pgbouncer connection-pooling dangling-lock interview-priority"
+       data-title="advisory locks — application-level coordination through the database"
+       data-desc="locks on application-invented integers that guard code, not data: the sign-up-sheet model, the singleton-cron case row locks can&#x27;t solve, session-vs-transaction scope, the try/shared function matrix, key-space collisions, and the limit dangling-lock trap.">
+      <h2 class="entry-title">Advisory Locks — Application-Level Coordination Through the Database</h2>
+      <p class="entry-desc">Locks on application-invented integers that guard code, not data: the sign-up-sheet model, the singleton-cron case row locks can&#x27;t solve, session-vs-transaction scope, the try/shared function matrix, key-space collisions, and the LIMIT dangling-lock trap.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">advisory-lock</span>
+        <span class="badge tag">pg-advisory-lock</span>
+        <span class="badge tag">pg-try-advisory-lock</span>
+        <span class="badge tag">pg-advisory-xact-lock</span>
+        <span class="badge related">↔ 5</span>
+        <span class="meta-dates">2026-08-23</span>
+      </div>
+    </a>
+
     <a class="entry-card" href="entries/buffer-pool/index.html"
        data-tags="buffer-pool shared-buffers page-cache buffer-manager buffer-tag buffer-descriptor clock-sweep usage-count pin refcount eviction dirty-page bgwriter checkpointer ring-buffer buffer-access-strategy double-buffering effective-cache-size work-mem pg-buffercache interview-priority"
        data-title="buffer pool / page cache — how a db manages memory"

@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Advisory Locks — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Advisory Locks — Application-Level Coordination Through the Database</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">An <strong>advisory lock</strong> is a lock on an integer the application invents, attached to no row, table, or object Postgres knows about. It solves a gap row locks cannot reach: mutual exclusion over <em>a stretch of code</em> — a singleton cron job, a leader election, a non-idempotent call to an external API — where there is no piece of data to lock in the first place.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">transactions</span>
+        <span class="badge tag">advisory-lock</span>
+        <span class="badge tag">session-level-lock</span>
+        <span class="badge tag">transaction-level-lock</span>
+        <span class="badge tag">mutual-exclusion</span>
+        <span class="badge tag">distributed-lock</span>
+        <span class="badge tag">pgbouncer</span>
+        <span class="meta-dates">Created 2026-08-15 · Updated 2026-08-23</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt>Advisory lock</dt>
+        <dd>A lock on an application-invented 64-bit integer key. Postgres answers only one question — <em>is any session currently holding this key?</em> — and does not enforce the lock against any data. It works only because the code agrees to check it.</dd>
+
+        <dt>Transaction-level lock</dt>
+        <dd>Taken with <code>pg_advisory_xact_lock</code>. Released automatically at the end of the transaction — commit or rollback — with no unlock call.</dd>
+
+        <dt>Session-level lock</dt>
+        <dd>Taken with <code>pg_advisory_lock</code>. Held until an explicit unlock call or the session ends. It does <strong>not</strong> follow transaction boundaries — a <code>ROLLBACK</code> does not release it.</dd>
+
+        <dt>Try (non-blocking) function</dt>
+        <dd>The <code>pg_try_advisory_*</code> family. Returns <code>true</code>/<code>false</code> immediately instead of waiting for the key to free up.</dd>
+
+        <dt>Shared vs exclusive mode</dt>
+        <dd>Shared mode conflicts only with exclusive mode, never with another shared holder — the same rule row-level shared/exclusive locks follow.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>A nightly job emails every customer their invoice. It runs on three app servers for redundancy, each with a cron entry at 02:00. Every server wakes at the same second:</p>
+      <pre><code class="lang-text">02:00:00  server-1 wakes → SELECT * FROM customers → sends 8,000 emails
+02:00:00  server-2 wakes → SELECT * FROM customers → sends 8,000 emails
+02:00:00  server-3 wakes → SELECT * FROM customers → sends 8,000 emails</code></pre>
+      <p>Every customer gets three invoices. Row locking cannot fix this: <code>SELECT ... FOR UPDATE</code> needs a row, and there is no row representing "the act of sending" — the thing that must become exclusive is a piece of application code, not data.</p>
+      <p>An advisory lock has no such requirement. All three servers run the same line against the same Postgres at 02:00:00:</p>
+      <pre><code class="lang-sql">BEGIN;
+SELECT pg_try_advisory_xact_lock(9001) AS got_it;</code></pre>
+      <table class="compare">
+        <thead><tr><th>Server</th><th><code>got_it</code></th><th>Behaviour</th></tr></thead>
+        <tbody>
+          <tr><td>server-1</td><td data-score="90">true</td><td>proceeds — sends the 8,000 emails</td></tr>
+          <tr><td>server-2</td><td data-score="25">false</td><td>logs "already running", exits</td></tr>
+          <tr><td>server-3</td><td data-score="25">false</td><td>logs "already running", exits</td></tr>
+        </tbody>
+      </table>
+      <pre><code class="lang-python">with db.transaction():
+    if not db.query("SELECT pg_try_advisory_xact_lock(9001)").scalar():
+        log.info("invoice run already in progress, skipping")
+        return
+    send_all_invoices()          # only ever one server is inside this block
+# COMMIT — lock released automatically</code></pre>
+      <p>The number <code>9001</code> means "the nightly invoice job" only because every server was told so. Typo it as <code>9002</code> on one server and that server sails straight through and sends its own 8,000 emails — no error, no warning. The database polices the key faithfully; it has no opinion on whether the application used the right one.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture two due-date policies for the same locked cabinet key. Under one policy, the key goes back to the front desk the moment your library visit ends — whether you found your book or gave up and left early. Under the other, the key stays checked out under your name until <em>you personally</em> walk back and hand it in; leaving your visit early changes nothing. Postgres runs both policies on the same kind of key at the same time, and which one you picked decides what happens the instant a <code>ROLLBACK</code> hits.</p>
+      <p>Step through the same key (<code>42</code>) acquired two ways: once as a transaction-level lock, once as a session-level lock, both ended by the same <code>ROLLBACK</code>.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 780 340" aria-label="Transaction-level advisory lock releasing automatically on ROLLBACK, versus session-level advisory lock remaining held after the same ROLLBACK until explicitly unlocked">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- ── Row 1: transaction-level ── -->
+          <text x="20" y="25" class="label-text" font-weight="700">Transaction-level — pg_advisory_xact_lock(42)</text>
+
+          <g id="xact-begin" class="step-el">
+            <rect x="20" y="40" width="90" height="50" class="node-rect" />
+            <text x="65" y="70" text-anchor="middle" class="node-text">BEGIN</text>
+          </g>
+          <line id="edge-xact-a" class="step-el edge-line" x1="110" y1="65" x2="150" y2="65" marker-end="url(#arrow)" />
+
+          <g id="xact-acquire" class="step-el">
+            <rect x="155" y="40" width="180" height="50" class="node-rect" />
+            <text x="245" y="62" text-anchor="middle" class="node-text">xact_lock(42)</text>
+            <text x="245" y="80" text-anchor="middle" class="label-text">ACQUIRED</text>
+          </g>
+          <line id="edge-xact-b" class="step-el edge-line" x1="335" y1="65" x2="375" y2="65" marker-end="url(#arrow)" />
+
+          <g id="xact-rollback" class="step-el">
+            <rect x="380" y="40" width="120" height="50" class="node-rect" />
+            <text x="440" y="70" text-anchor="middle" class="node-text">ROLLBACK</text>
+          </g>
+          <line id="edge-xact-c" class="step-el edge-line" x1="500" y1="65" x2="540" y2="65" marker-end="url(#arrow)" />
+
+          <g id="xact-released" class="step-el">
+            <rect x="545" y="40" width="150" height="50" class="node-rect" />
+            <text x="620" y="62" text-anchor="middle" class="node-text">RELEASED ✓</text>
+            <text x="620" y="80" text-anchor="middle" class="label-text">automatic, no call needed</text>
+          </g>
+
+          <line x1="10" y1="120" x2="770" y2="120" class="edge-line" stroke-dasharray="4 4" />
+
+          <!-- ── Row 2: session-level ── -->
+          <text x="20" y="150" class="label-text" font-weight="700">Session-level — pg_advisory_lock(42)</text>
+
+          <g id="sess-begin" class="step-el">
+            <rect x="20" y="165" width="90" height="50" class="node-rect" />
+            <text x="65" y="195" text-anchor="middle" class="node-text">BEGIN</text>
+          </g>
+          <line id="edge-sess-d" class="step-el edge-line" x1="110" y1="190" x2="150" y2="190" marker-end="url(#arrow)" />
+
+          <g id="sess-acquire" class="step-el">
+            <rect x="155" y="165" width="180" height="50" class="node-rect" />
+            <text x="245" y="187" text-anchor="middle" class="node-text">lock(42)</text>
+            <text x="245" y="205" text-anchor="middle" class="label-text">ACQUIRED</text>
+          </g>
+          <line id="edge-sess-e" class="step-el edge-line" x1="335" y1="190" x2="375" y2="190" marker-end="url(#arrow)" />
+
+          <g id="sess-rollback" class="step-el">
+            <rect x="380" y="165" width="120" height="50" class="node-rect" />
+            <text x="440" y="195" text-anchor="middle" class="node-text">ROLLBACK</text>
+          </g>
+          <line id="edge-sess-f" class="step-el edge-line" x1="500" y1="190" x2="540" y2="190" marker-end="url(#arrow)" />
+
+          <g id="sess-stillheld" class="step-el">
+            <rect x="545" y="165" width="150" height="50" class="node-rect" />
+            <text x="620" y="187" text-anchor="middle" class="node-text">STILL HELD ⚠</text>
+            <text x="620" y="205" text-anchor="middle" class="label-text">rollback did nothing</text>
+          </g>
+
+          <!-- elbow from still-held down to explicit unlock -->
+          <path id="edge-sess-g" class="step-el edge-line" d="M620,215 L620,238 L525,238 L525,260" marker-end="url(#arrow)" fill="none" />
+
+          <g id="sess-unlock" class="step-el">
+            <rect x="440" y="260" width="170" height="50" class="node-rect" />
+            <text x="525" y="290" text-anchor="middle" class="node-text">pg_advisory_unlock(42)</text>
+          </g>
+          <line id="edge-sess-h" class="step-el edge-line" x1="610" y1="285" x2="650" y2="285" marker-end="url(#arrow)" />
+
+          <g id="sess-released" class="step-el">
+            <rect x="655" y="260" width="110" height="50" class="node-rect" />
+            <text x="710" y="290" text-anchor="middle" class="node-text">RELEASED</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Why not just build a locks table?</h3>
+        <p>That instinct is correct — an advisory lock is the lock table you would otherwise build, provided by Postgres for free.</p>
+        <table class="compare">
+          <thead><tr><th>Roll your own</th><th>Advisory lock</th></tr></thead>
+          <tbody>
+            <tr><td>Create a table, insert a row, <code>SELECT ... FOR UPDATE</code> it</td><td><code>pg_try_advisory_xact_lock(9001)</code> — no table, no rows</td></tr>
+            <tr><td>Locking writes to the tuple → dead tuples → autovacuum churn</td><td>no bloat</td></tr>
+            <tr><td>A crashed holder leaves a stale row; needs lease expiry + a reaper job</td><td>the lock itself vanishes the instant the connection dies</td></tr>
+          </tbody>
+        </table>
+        <p>The trade is enforcement, not mechanism: a <code>job_locks</code> row is real, inspectable data with a readable name. An advisory lock is an integer with no schema, no comment, and no foreign key explaining what it means — that documentation burden moves entirely into the codebase.</p>
+
+        <h3>Key collisions</h3>
+        <p>Both functions have two overloads — <code>pg_advisory_lock(bigint)</code> and <code>pg_advisory_lock(int, int)</code> — and the two key spaces do <strong>not</strong> overlap. The two-int form gives a natural (classifier, identifier) split for picking keys, e.g. <code>pg_advisory_xact_lock(1, 48291)</code> for "per-user critical section, user 48291". For string-named resources, the idiom is <code>pg_advisory_xact_lock(hashtext('nightly-invoice-run'))</code> — but <code>hashtext</code> is only a 32-bit hash, so two unrelated subsystems can compute the same key and block each other for reasons no one diagnoses quickly. Mitigation: reserve a distinct classifier per subsystem, and keep one shared registry of key constants rather than literals scattered at call sites.</p>
+
+        <h3>Connection poolers</h3>
+        <p>Under PgBouncer transaction pooling, a "session" is a backend connection borrowed for one transaction and handed to someone else afterward. A session-level advisory lock taken there leaks onto a connection the application no longer controls, and a later unrelated request can inherit it. Transaction-level advisory locks are safe under transaction pooling; session-level locks require session pooling.</p>
+
+        <h3>Shared memory exhaustion</h3>
+        <p>Advisory locks live in the same shared lock pool as regular locks, sized by <code>max_locks_per_transaction × max_connections</code>. Exhausting it leaves the server unable to grant <em>any</em> lock at all, giving a practical ceiling in the tens to hundreds of thousands. A per-row advisory lock over a million-row table is not a viable design.</p>
+
+        <h3>They can deadlock too</h3>
+        <p>Advisory locks share the same lock manager as regular locks, so two sessions acquiring keys in opposite order produce the same circular wait as any other deadlock (see the Deadlocks entry below): session A locks key 1 then wants key 2, while session B locks key 2 then wants key 1. The fix is identical — a consistent global acquisition order, most simply ascending numeric key order. The <code>pg_try_advisory_*</code> variants sidestep the problem entirely: a caller that never waits cannot join a wait-for cycle.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> calling an advisory-lock function inside a query with a <code>LIMIT</code>, assuming only the returned rows get locked.
+          <pre><code class="lang-sql">-- DANGER: may lock far more than 100 rows
+SELECT pg_advisory_lock(id) FROM foo WHERE id > 12345 LIMIT 100;</code></pre>
+          <p>Why it breaks: lock functions are ordinary functions evaluated per row, and <code>LIMIT</code> is not guaranteed to apply before they run. Postgres may call <code>pg_advisory_lock</code> for every row the scan touches before trimming to 100 — leaving <strong>dangling locks</strong> the application never intended to take and never releases, visible only in <code>pg_locks</code> for the rest of the session. The fix is forcing the <code>LIMIT</code> first, inside a subquery: <code>SELECT pg_advisory_lock(q.id) FROM (SELECT id FROM foo WHERE id > 12345 LIMIT 100) q;</code></p>
+        </div>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../select-for-update-skip-locked/index.html" data-entry="select-for-update-skip-locked">
+        <strong>SELECT FOR UPDATE &amp; SKIP LOCKED — Row Locks and the Postgres Job Queue</strong>
+        <span>A row lock is welded to real data and enforced by Postgres itself; an advisory lock guards code that has no row to grab, which is exactly the gap this pattern cannot fill.</span>
+      </a>
+      <a class="related-card" href="../two-phase-locking/index.html" data-entry="two-phase-locking">
+        <strong>Two-Phase Locking (2PL)</strong>
+        <span>Advisory locks queue in Postgres's own lock manager, so the xact variant's acquire-then-release-at-commit shape is the same strict-2PL discipline this entry formalizes.</span>
+      </a>
+      <a class="related-card" href="../deadlocks/index.html" data-entry="deadlocks">
+        <strong>Deadlocks — Detection, Prevention &amp; the Coffman Conditions</strong>
+        <span>Advisory locks share the same wait-for graph as row and table locks, so acquiring keys in opposite order across sessions deadlocks exactly like any other lock.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>Session-level advisory locks ignore snapshot and rollback semantics entirely — a useful contrast with how carefully MVCC snapshots govern ordinary reads at each isolation level.</span>
+      </a>
+      <a class="related-card" href="../optimistic-vs-pessimistic-locking/index.html" data-entry="optimistic-vs-pessimistic-locking">
+        <strong>Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length</strong>
+        <span>An advisory lock is a pessimistic, lock-first primitive on a manufactured key — the same philosophy as row-level pessimistic locking, applied to code instead of data.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/explicit-locking.html" target="_blank" rel="noopener">PostgreSQL Documentation — Explicit Locking (13.3.5. Advisory Locks)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/functions-admin.html" target="_blank" rel="noopener">PostgreSQL Documentation — System Administration Functions (9.28.10. Advisory Lock Functions)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A session calls <code>pg_advisory_lock(42)</code> (the session-level variant) inside a transaction, and that transaction then <code>ROLLBACK</code>s. What happens to the lock?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">It releases immediately, the same as a row lock would.</button>
+            <button class="option" data-correct="true">It stays held — session-level locks ignore transaction semantics entirely. Only an explicit <code>pg_advisory_unlock(42)</code> or the session ending frees it.</button>
+            <button class="option" data-correct="false">Postgres raises an error because the lock outlived its transaction.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Session-level advisory locks are documented to survive a rollback: "a lock acquired during a transaction that is later rolled back will still be held." This is the exact surprise that causes production incidents — default to the <code>xact</code> variant unless the critical section genuinely spans multiple transactions.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Three cron servers all call <code>pg_try_advisory_xact_lock(9001)</code> at the same instant. What happens to the two that don't get the lock?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">They block until the winner commits, then run the job one after another.</button>
+            <button class="option" data-correct="true">They get <code>false</code> back immediately and can skip the job without ever waiting.</button>
+            <button class="option" data-correct="false">Postgres returns an error to them because the key is already in use.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The <code>try</code> variant never blocks — it returns a boolean at once. That is exactly why it fits a redundancy mechanism: choosing the blocking <code>pg_advisory_xact_lock</code> instead would turn a safety net into four sequential duplicate runs.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">Suppose a service used a homemade <code>job_locks</code> table (insert a row, then <code>SELECT ... FOR UPDATE</code> it) instead of an advisory lock, and the holder process got OOM-killed mid-run. Trace what state is left behind and what has to exist to recover automatically.</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The row-level lock itself vanishes the moment the connection drops — same as an advisory lock. The problem is the <em>row</em>: if the table's mere existence, or a status column on it, is what the application reads to decide "is a job running", that data outlives the dead connection and now lies. Nothing automatically deletes or resets it. Recovering requires a lease/timestamp column plus a reaper process that treats a stale claim (past some age) as abandoned and clears it — exactly the extra machinery the comparison table calls out. An advisory lock has no accompanying row to leave behind, so this failure mode does not exist for it.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (term cards for NONE calibration) ──────────────
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap ──────────────────────────────────
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (transaction-level vs session-level release) ─────
+    const steps = [
+      { activate: ['#xact-begin', '#edge-xact-a', '#xact-acquire'],
+        explanation: 'Transaction-level: BEGIN, then pg_advisory_xact_lock(42) acquires the key. It behaves like a regular lock request, tied to this transaction.' },
+      { activate: ['#xact-acquire', '#edge-xact-b', '#xact-rollback', '#edge-xact-c', '#xact-released'],
+        explanation: 'ROLLBACK ends the transaction — commit or rollback makes no difference. The xact lock releases automatically. There is no unlock function for this variant, and none is needed.' },
+      { activate: ['#sess-begin', '#edge-sess-d', '#sess-acquire'],
+        explanation: 'Session-level: BEGIN, then pg_advisory_lock(42) acquires the same key — but now the lock belongs to the session, not the transaction wrapping it.' },
+      { activate: ['#sess-acquire', '#edge-sess-e', '#sess-rollback', '#edge-sess-f', '#sess-stillheld'],
+        explanation: 'ROLLBACK ends the transaction — yet the session-level lock ignores transaction semantics and stays held. This is the surprise that causes real production incidents.' },
+      { activate: ['#sess-stillheld', '#edge-sess-g', '#sess-unlock', '#edge-sess-h', '#sess-released'],
+        explanation: 'Only an explicit pg_advisory_unlock(42), or the session itself disconnecting, frees it. Forget that call and the lock leaks for the life of the connection.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'select-for-update-skip-locked': { title: 'SELECT FOR UPDATE & SKIP LOCKED — Row Locks and the Postgres Job Queue', summary: 'Read-and-reserve via row-level exclusive locks: the lost-update race MVCC leaves open, the four lock strengths + conflict matrix, wait/NOWAIT/SKIP LOCKED policies, the CTE job-queue claim, and READ COMMITTED’s EvalPlanQual re-check.' },
+      'two-phase-locking': { title: 'Two-Phase Locking (2PL)', summary: 'The growing/shrinking phases and lock-point serializability, S/X compatibility, the Basic→Strict→SS2PL→Conservative variants with a lock-timing trace, and Postgres’s MVCC+strict-2PL hybrid.' },
+      'deadlocks': { title: 'Deadlocks — Detection, Prevention & the Coffman Conditions', summary: 'The four Coffman conditions as the master key, the four handling strategies, Postgres detect-and-abort (deadlock_timeout, 40P01, consistent lock ordering), and livelock vs deadlock.' },
+      'isolation-levels': { title: 'Isolation Levels & Read Anomalies', summary: 'The anomaly×level table, MVCC snapshot timing per level, Postgres-vs-ANSI divergence, write skew, SSI/predicate locks, and the 40001 retry contract.' },
+      'optimistic-vs-pessimistic-locking': { title: 'Optimistic vs Pessimistic Locking — Choosing by Conflict Rate and Window Length', summary: 'Two answers to the application-level lost update: lock-first vs validate-at-write; Kung & Robinson’s read/validate/write phases, why the version column is a compare-and-swap built on EvalPlanQual, the READ COMMITTED (0 rows) vs REPEATABLE READ (40001) split, the atomic-in-place third option, and the per-row blind spot (write skew, phantoms).' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

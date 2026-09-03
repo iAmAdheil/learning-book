@@ -1,0 +1,544 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EXPLAIN &amp; EXPLAIN ANALYZE — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* diag-* SVG vocabulary shim for this entry's plan-tree trace — theme-aware via style.css vars */
+    .diagram-svg .diag-box { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1.5; transition: fill 300ms ease, stroke 300ms ease; }
+    .diagram-svg .step-el.active .diag-box { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 2; }
+    .diagram-svg .diag-title { fill: var(--text); font-family: var(--font); font-weight: 700; font-size: 13px; }
+    .diagram-svg .diag-text { fill: var(--text-muted); font-family: var(--font); font-size: 12px; }
+    .diagram-svg .diag-mono { fill: var(--text-muted); font-family: var(--mono); font-size: 11.5px; }
+    .diagram-svg .diag-edge { stroke: var(--border); stroke-width: 1.5; fill: none; }
+    .diagram-svg .diag-edge-dashed { stroke: var(--border); stroke-width: 1.5; stroke-dasharray: 5 4; fill: none; }
+    .diagram-svg .diag-gap rect { stroke-width: 1.5; }
+    .diagram-svg .diag-gap text { font-family: var(--font); font-weight: 700; font-size: 12px; }
+    .diagram-svg .diag-gap-warn rect { fill: var(--warn-soft); stroke: var(--warn); }
+    .diagram-svg .diag-gap-warn text { fill: var(--warn); }
+    .diagram-svg .diag-gap-good rect { fill: var(--good-soft); stroke: var(--good); }
+    .diagram-svg .diag-gap-good text { fill: var(--good); }
+    .diagram-svg .diag-gap-bad rect { fill: var(--bad-soft); stroke: var(--bad); }
+    .diagram-svg .diag-gap-bad text { fill: var(--bad); }
+    .diagram-svg .diag-callout rect { fill: var(--surface); stroke: var(--accent); stroke-dasharray: 3 3; }
+    .diagram-svg .diag-callout text { fill: var(--accent); font-family: var(--mono); font-size: 11px; }
+    .doc-quote { border-left: 3px solid var(--accent); background: var(--surface-elev); padding: 0.6rem 1rem; margin: 0.85rem 0; border-radius: 0 6px 6px 0; color: var(--text-muted); font-size: 0.92rem; }
+    .doc-quote strong { color: var(--text); }
+    .related-note { color: var(--text-muted); font-size: 0.88rem; margin: 0.9rem 0 0; padding: 0.6rem 0.9rem; border: 1px dashed var(--border); border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>EXPLAIN &amp; EXPLAIN ANALYZE — Reading Query Plans in Practice</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text"><a href="../query-planning/index.html">Query planning</a> is the database's guess about the fastest way to run a query. <code>EXPLAIN</code> prints that guess as a tree of nodes. <code>EXPLAIN ANALYZE</code> actually runs the query and prints the guess <strong>next to what really happened</strong> — row by row, cost by cost, node by node. Reading the gap between those two columns, in the right order, is the single most useful skill in database performance work.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">explain</span>
+        <span class="badge tag">explain-analyze</span>
+        <span class="badge tag">plan-tree</span>
+        <span class="badge tag">actual-rows</span>
+        <span class="badge tag">loops</span>
+        <span class="badge tag">rows-removed-by-filter</span>
+        <span class="badge tag">buffers</span>
+        <span class="badge tag">seq-scan</span>
+        <span class="badge tag">index-scan</span>
+        <span class="badge tag">nested-loop</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-09-01 · Updated 2026-09-01</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-dl">
+        <dt><code>rows=</code> (estimated) vs. actual rows</dt>
+        <dd>The planner's guess at how many rows a node will produce, next to what it really produced. Comparing these two numbers, at every node, is the core diagnostic move in this entry.</dd>
+
+        <dt><code>loops</code></dt>
+        <dd>How many times a node executed — greater than 1 whenever the node sits on the inner side of a nested loop. When <code>loops</code> is above 1, the <code>actual time</code> and <code>rows</code> shown are <strong>averages per execution</strong>, not totals.</dd>
+
+        <dt>Rows Removed by Filter</dt>
+        <dd>Rows this node read (or, for a join, row pairs it considered) and then threw away because they failed a condition. It is a direct measure of wasted work, and it appears on index scans just as readily as on sequential scans.</dd>
+
+        <dt><code>Index Cond</code> vs. <code>Filter</code></dt>
+        <dd>Where a condition gets applied. <code>Index Cond</code> is checked during the B-tree traversal, so a non-matching row is never visited. <code>Filter</code> is checked after the row is already fetched from the heap, so a non-matching row is fully paid for and then discarded.</dd>
+
+        <dt>Startup cost &amp; total cost</dt>
+        <dd>Startup cost is the estimated work before the first row can come out; total cost assumes the node runs to completion. Costs are <strong>cumulative upward</strong> — a parent node's total cost already includes the cost of every child beneath it.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>One scan node from a real plan, field by field:</p>
+      <pre><code class="lang-text">Seq Scan on transactions  (cost=0.00..470.00 rows=7000 width=244)
+                          (actual time=0.030..1.995 rows=7000 loops=1)</code></pre>
+      <ul>
+        <li><code>cost=0.00..470.00</code> — startup cost (nothing to do before the first row) and total cost (the cost if the node runs to completion). This is a leaf scan with no children, so the full <code>470.00</code> is this node's own work; on a parent node, part of that number would belong to the children beneath it.</li>
+        <li><code>rows=7000</code> — the estimate, assuming the node runs to completion. <code>width=244</code> is the estimated average row size in bytes.</li>
+        <li><code>actual time=0.030..1.995</code> — time to the first row, then time to the last row.</li>
+        <li><code>rows=7000 loops=1</code> — actual output. This node ran once, so no adjustment is needed.</li>
+      </ul>
+
+      <p>Now the same fields on a node that sits inside a nested loop, where <code>loops</code> is not 1:</p>
+      <pre><code class="lang-text">Index Scan on transactions  (actual time=0.012..0.014 rows=3 loops=50000)</code></pre>
+      <p><code>0.014</code> ms and <code>3</code> rows look harmless. They are not totals. <strong>The actual time and rows shown are averages per execution, and have to be multiplied by <code>loops</code> to get the true total.</strong> Do the arithmetic on the page rather than trusting the first impression:</p>
+      <pre><code class="lang-text">0.014 ms × 50,000 loops ≈ 700 ms
+3 rows   × 50,000 loops  = 150,000 rows</code></pre>
+      <p>"700 ms, 150,000 rows" is a diagnosis you can act on. "It looks fast" is not — and this exact gap is how a 40-minute query hides inside its own plan.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Picture a plan as a small org chart where a rumor started at the bottom. Each node passes a row count up to its parent, and sometimes that rumor is badly wrong because a filter turned out far less selective than the planner guessed. Your job is not to listen at the top — it is to walk <em>down</em> the chart until you find the node where the rumor first went wrong. Two rules make the walk correct: a node's own cost is what is left after you subtract its children's cost, because totals are cumulative upward; and inside anything that repeats, the "actual" numbers are a per-execution average, so you must multiply by <code>loops</code> before comparing them to anything else.</p>
+      <p>Step through a real plan below, applying both rules in the order that finds the cause rather than its echo.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">N</span></div>
+        <svg class="diagram-svg" viewBox="0 0 900 620" aria-label="A Nested Loop plan tree traced in diagnostic order: the top-level row estimate gap, the two child scans, the lowest node where the gap actually starts, the loop-multiplication arithmetic, the wasted-heap-fetch arithmetic, and the composite-index fix">
+          <defs>
+            <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L8,3 L0,6 Z" fill="currentColor" />
+            </marker>
+          </defs>
+
+          <!-- static tree skeleton: always visible -->
+          <line class="diag-edge" x1="360" y1="145" x2="205" y2="190" marker-end="url(#arrow)" />
+          <line class="diag-edge" x1="510" y1="145" x2="645" y2="190" marker-end="url(#arrow)" />
+
+          <!-- ── Root: Nested Loop ── -->
+          <g id="root-box" class="step-el">
+            <rect x="290" y="20" width="320" height="125" rx="8" class="diag-box" />
+            <text x="305" y="45" class="diag-title">Nested Loop</text>
+          </g>
+          <g id="root-stats" class="step-el">
+            <text x="305" y="69" class="diag-mono">cost=0.43..8912.55  rows=12 (estimated)</text>
+            <text x="305" y="91" class="diag-mono">actual rows=48213  loops=1</text>
+          </g>
+          <g id="root-gap" class="step-el diag-gap diag-gap-warn">
+            <rect x="300" y="102" width="300" height="30" rx="6" />
+            <text x="312" y="122">12 → 48,213 (4,000×) — likely an echo</text>
+          </g>
+
+          <!-- ── Left child: Seq Scan on merchants ── -->
+          <g id="left-box" class="step-el">
+            <rect x="40" y="190" width="330" height="150" rx="8" class="diag-box" />
+            <text x="55" y="215" class="diag-title">Seq Scan on merchants m</text>
+          </g>
+          <g id="left-stats" class="step-el">
+            <text x="55" y="239" class="diag-mono">cost=0.00..12.40  rows=4 (estimated)</text>
+            <text x="55" y="261" class="diag-mono">actual rows=40  loops=1</text>
+          </g>
+          <g id="left-filter" class="step-el">
+            <text x="55" y="283" class="diag-mono">Filter: category = 'RETAIL' · Removed: 0</text>
+          </g>
+          <g id="left-gap" class="step-el diag-gap diag-gap-good">
+            <rect x="55" y="298" width="290" height="30" rx="6" />
+            <text x="67" y="318">4 → 40 (10×) — normal noise</text>
+          </g>
+
+          <!-- ── Right child: Index Scan on transactions ── -->
+          <g id="right-box" class="step-el">
+            <rect x="430" y="190" width="430" height="245" rx="8" class="diag-box" />
+            <text x="445" y="215" class="diag-title">Index Scan using idx_txn_merchant</text>
+            <text x="445" y="233" class="diag-title">on transactions t</text>
+          </g>
+          <g id="right-stats" class="step-el">
+            <text x="445" y="257" class="diag-mono">cost=0.43..2222.51  rows=3 (estimated)</text>
+            <text x="445" y="279" class="diag-mono">actual time=0.094..1030.412  rows=1205  loops=40</text>
+          </g>
+          <g id="right-indexcond" class="step-el">
+            <text x="445" y="301" class="diag-mono">Index Cond: merchant_id = m.merchant_id</text>
+          </g>
+          <g id="right-gap" class="step-el diag-gap diag-gap-bad">
+            <rect x="445" y="312" width="400" height="28" rx="6" />
+            <text x="457" y="331">3 → 1205 (400×) — LOWEST divergence = cause</text>
+          </g>
+          <g id="right-loopscallout" class="step-el diag-callout">
+            <rect x="445" y="348" width="400" height="28" rx="5" />
+            <text x="457" y="367">1030.412 ms × 40 loops ≈ 41,238 ms — matches top node</text>
+          </g>
+          <g id="right-filterline" class="step-el">
+            <text x="445" y="398" class="diag-mono">Filter: status = 'SUCCESS' · Removed: 8734</text>
+          </g>
+          <g id="right-removedcallout" class="step-el diag-callout">
+            <rect x="445" y="408" width="400" height="28" rx="5" />
+            <text x="457" y="427">8734 × 40 loops ≈ 350,000 heap fetches wasted</text>
+          </g>
+
+          <!-- ── Fix ── -->
+          <g id="fix-group" class="step-el">
+            <line x1="645" y1="435" x2="645" y2="475" class="diag-edge-dashed" marker-end="url(#arrow)" />
+            <rect x="430" y="475" width="430" height="100" rx="8" class="diag-box" />
+            <text x="445" y="500" class="diag-title">Fix: composite index (merchant_id, status)</text>
+            <text x="445" y="524" class="diag-text">status moves from Filter into Index Cond —</text>
+            <text x="445" y="544" class="diag-text">non-matching rows are skipped, not fetched.</text>
+          </g>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">Loading…</p>
+      </div>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Run <code>ANALYZE</code> on a write, and the write happens</h3>
+        <p class="doc-quote">"Keep in mind that the statement is actually executed when the <code>ANALYZE</code> option is used. Although <code>EXPLAIN</code> will discard any output that a <code>SELECT</code> would return, other side effects of the statement will happen as usual." — PostgreSQL Documentation</p>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> running <code>EXPLAIN ANALYZE</code> directly on an <code>UPDATE</code> or <code>DELETE</code> to "just check the plan."
+          <pre><code class="lang-sql">EXPLAIN ANALYZE UPDATE transactions SET status = 'FAILED' WHERE txn_id = 42;</code></pre>
+          <p>Why it breaks: <code>EXPLAIN</code> only discards the row output a <code>SELECT</code> would have returned. The update itself commits normally. Row 42 is now really set to <code>'FAILED'</code>. Make this reflex before running <code>ANALYZE</code> on any write:</p>
+          <pre><code class="lang-sql">BEGIN;
+EXPLAIN ANALYZE UPDATE transactions SET status = 'FAILED' WHERE txn_id = 42;
+ROLLBACK;</code></pre>
+        </div>
+
+        <h3>Index Cond versus Filter — what Rows Removed by Filter actually measures</h3>
+        <p>A row counted by <code>Rows Removed by Filter</code> is one the engine already visited the heap for: it paid the page access, read the tuple, checked visibility, and then dropped it. It is not a statement about access strategy, only about wasted work.</p>
+        <table class="compare">
+          <thead><tr><th></th><th>Applied where</th><th>Cost of a non-matching row</th></tr></thead>
+          <tbody>
+            <tr><td><code>Index Cond</code></td><td>during the B-tree traversal</td><td>never visited — the index entry is skipped</td></tr>
+            <tr><td><code>Filter</code></td><td>after the row is retrieved</td><td>fully paid — heap fetch performed, then discarded</td></tr>
+          </tbody>
+        </table>
+        <p>The fix is more specific than "add an index" — an index often already exists. The goal is to move the predicate from <code>Filter</code> into <code>Index Cond</code>:</p>
+        <pre><code class="lang-text">idx(merchant_id)          → Index Cond: merchant_id      Filter: status   ← 8734 wasted
+idx(merchant_id, status)  → Index Cond: merchant_id AND status            ← 0 wasted</code></pre>
+        <p>A <code>Filter</code> line on an index scan with a large <code>Rows Removed</code> count is really the question "can that predicate become part of the index?" — the question <a href="../composite-indexes/index.html">composite index</a> design exists to answer.</p>
+
+        <h3>Scan node vocabulary</h3>
+        <ul>
+          <li><strong>Seq Scan</strong> — reads every page of the table. Not automatically bad: fine for a small table or when a large fraction of rows is needed. It is a warning sign when paired with a large <code>Rows Removed by Filter</code>.</li>
+          <li><strong>Index Scan</strong> — descends the <a href="../btree-indexes/index.html">B-tree</a>, then fetches each matching row from the heap. Two structures touched per row; good for high selectivity.</li>
+          <li><strong>Index Only Scan</strong> — answered entirely from the index, no heap access, provided the visibility map says the page is all-visible. <code>Heap Fetches: 0</code> is healthy; a large number means <a href="../covering-indexes/index.html">the visibility map is stale</a> and the "index only" scan is secretly visiting the heap anyway.</li>
+          <li><strong>Bitmap Heap Scan</strong> with a <strong>Bitmap Index Scan</strong> beneath — collects matching row locations, sorts them into physical page order, then reads the heap sequentially. Chosen when there are too many rows for individual random fetches but too few for a full scan. <code>Recheck Cond</code> appears because a large bitmap can go lossy (whole pages instead of exact rows), forcing a re-check of the condition.</li>
+        </ul>
+
+        <h3>Physical warning signs</h3>
+        <table class="compare">
+          <thead><tr><th>Signal</th><th>Meaning</th></tr></thead>
+          <tbody>
+            <tr><td><code>Rows Removed by Filter: 3000000</code></td><td>the scan read millions of rows and threw them away — a missing or unusable index</td></tr>
+            <tr><td><code>Batches: 16</code> under a <code>Hash</code></td><td>the hash table spilled to disk — <code>work_mem</code> too small, or the row estimate was wrong</td></tr>
+            <tr><td><code>Sort Method: external merge  Disk: 24MB</code></td><td>the sort spilled to disk instead of staying in memory</td></tr>
+            <tr><td><code>Heap Fetches: 480000</code> on an Index Only Scan</td><td><code>VACUUM</code> is behind on the visibility map</td></tr>
+            <tr><td><code>Seq Scan</code> on the inner side of a nested loop</td><td>an emergency signal from <a href="../join-algorithms/index.html">join algorithms</a></td></tr>
+            <tr><td><code>loops=</code> in the tens of thousands</td><td>an N+1 shape inside the engine</td></tr>
+          </tbody>
+        </table>
+
+        <h3>Options worth knowing</h3>
+        <p>Run as <code>EXPLAIN (ANALYZE, BUFFERS, VERBOSE, SETTINGS) SELECT ...;</code></p>
+        <table class="compare">
+          <thead><tr><th>Option</th><th>Default</th><th>Adds</th></tr></thead>
+          <tbody>
+            <tr><td><code>ANALYZE</code></td><td>off</td><td>actually runs the statement and shows real run times</td></tr>
+            <tr><td><code>BUFFERS</code></td><td>off, implied by <code>ANALYZE</code></td><td>shared/local/temp blocks hit, read, dirtied, written</td></tr>
+            <tr><td><code>VERBOSE</code></td><td>off</td><td>per-node output columns, schema-qualified names</td></tr>
+            <tr><td><code>SETTINGS</code></td><td>off</td><td>planner-relevant settings that differ from the built-in defaults</td></tr>
+            <tr><td><code>TIMING</code></td><td>on</td><td>per-node timing — set off when clock overhead distorts a fast query</td></tr>
+            <tr><td><code>GENERIC_PLAN</code></td><td>off</td><td>plans a parameterised query without values; cannot combine with <code>ANALYZE</code></td></tr>
+            <tr><td><code>FORMAT</code></td><td>text</td><td><code>JSON</code> / <code>YAML</code> / <code>XML</code> for tooling and visualisers</td></tr>
+          </tbody>
+        </table>
+        <p><code>SETTINGS</code> is underused and very effective in an unfamiliar environment — it often explains a surprising plan immediately. <code>GENERIC_PLAN</code> closes the loop on the custom-versus-generic plan question from <a href="../query-planning/index.html">query planning</a>: it shows what the prepared-statement form of a query gets, without needing real parameter values.</p>
+
+        <h3>Why BUFFERS beats timing when comparing two plans</h3>
+        <p>Timings depend on cache warmth, background load, and machine noise. Buffer counts do not — they are a deterministic count of pages touched, made observable through the <a href="../buffer-pool/index.html">buffer pool</a>.</p>
+        <pre><code class="lang-text">Buffers: shared hit=200000 read=812   →   shared hit=1500 read=40</code></pre>
+        <p>That is a real collapse in work, whatever the clock said on any single run. This matters most on a small, fully-cached practice dataset: everything fits in memory either way, so a bad plan and a good plan can take almost the same wall-clock time while the buffer counts still separate cleanly. <code>EXPLAIN (ANALYZE, BUFFERS)</code> is a safer default than plain <code>EXPLAIN ANALYZE</code> for exactly this reason.</p>
+
+        <h3>Planning time versus execution time</h3>
+        <p><code>Planning time</code> covers turning the parsed query into an optimized plan; it does not include parsing or rewriting. <code>Execution time</code> covers running that plan, including executor start-up/shutdown and any triggers fired — but not parsing, rewriting, or planning. Two consequences: if planning time rivals execution time, the query is trivial and a prepared statement will help; and because execution time includes trigger time, a mysteriously slow <code>INSERT</code> with a trivial-looking plan is usually a trigger doing invisible work.</p>
+
+        <h3>Practical habits</h3>
+        <ul>
+          <li>Run it twice. The first run pays cold-cache costs; the second reflects steady state. Compare <code>shared read</code> between the two runs.</li>
+          <li>Make <code>EXPLAIN (ANALYZE, BUFFERS)</code> the default incantation, not plain <code>EXPLAIN ANALYZE</code>.</li>
+          <li>Wrap any write in <code>BEGIN; ... ROLLBACK;</code> before adding <code>ANALYZE</code>.</li>
+          <li>Read bottom-up for what happened — rows flow up from the scans. Read top-down for what it cost — costs accumulate down from the root.</li>
+          <li>Predict the scan and join type before running the query. Being wrong is where the learning is.</li>
+          <li>Use <code>FORMAT JSON</code> when a plan is too large to read by eye, so a visualiser can render it.</li>
+        </ul>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+
+      <a class="related-card" href="../query-planning/index.html" data-entry="query-planning">
+        <strong>Query Planning &amp; Optimization — How the Database Picks a Plan</strong>
+        <span>The planner that produces every estimate this entry teaches you to check — EXPLAIN is that process made visible.</span>
+      </a>
+      <a class="related-card" href="../join-algorithms/index.html" data-entry="join-algorithms">
+        <strong>Join Algorithms — Nested Loop, Hash Join &amp; Merge Join</strong>
+        <span>The join type printed on a plan node is a consequence of the row estimate, not the cause of a slow query — the worked example proves it.</span>
+      </a>
+      <a class="related-card" href="../sql-fundamentals/index.html" data-entry="sql-fundamentals">
+        <strong>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</strong>
+        <span>Every node in a plan traces back to a clause in the query — this entry supplies that clause-level vocabulary.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes — Structure &amp; How Range/Equality Queries Use Them</strong>
+        <span>The structure an Index Scan actually walks, and what an <code>Index Cond</code> line is checking against.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes — Column Order &amp; the Leftmost-Prefix Rule</strong>
+        <span>The fix for the worked example's Filter-vs-Index-Cond gap: moving a predicate from Filter into Index Cond.</span>
+      </a>
+      <a class="related-card" href="../covering-indexes/index.html" data-entry="covering-indexes">
+        <strong>Covering Indexes &amp; Index-Only Scans</strong>
+        <span><code>Heap Fetches: 0</code> is this entry working as intended; a large count means the visibility map is stale.</span>
+      </a>
+      <a class="related-card" href="../buffer-pool/index.html" data-entry="buffer-pool">
+        <strong>Buffer Pool / Page Cache — How a DB Manages Memory</strong>
+        <span>The <code>BUFFERS</code> option reports shared hit/read counts straight out of this cache.</span>
+      </a>
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>How Data Is Stored on Disk — Heap Files, Pages &amp; Slots</strong>
+        <span>What a heap fetch actually costs — the page-and-slot structure an Index Scan visits after the B-tree traversal.</span>
+      </a>
+
+      <p class="related-note">Statistics &amp; Cardinality Estimation — why the planner's row estimate goes wrong in the first place — is a forthcoming entry in this book.</p>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/using-explain.html" target="_blank" rel="noopener">PostgreSQL Documentation — 14.1. Using EXPLAIN</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-explain.html" target="_blank" rel="noopener">PostgreSQL Documentation — EXPLAIN (SQL command reference)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/planner-optimizer.html" target="_blank" rel="noopener">PostgreSQL Documentation — 52.5. Planner/Optimizer</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/runtime-config-resource.html" target="_blank" rel="noopener">PostgreSQL Documentation — 20.4. Resource Consumption (work_mem)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+
+        <div class="quiz-question">
+          <p class="question-text">A node reads <code>(actual time=0.012..0.014 rows=3 loops=50000)</code>. What did this node actually do in total?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">0.014 ms and 3 rows — the numbers shown are already totals.</button>
+            <button class="option" data-correct="true">About 700 ms and 150,000 rows — actual time and rows are per-loop averages, so multiply both by <code>loops</code>.</button>
+            <button class="option" data-correct="false">50,000 ms and 50,000 rows — <code>loops</code> directly replaces the row count.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>actual time</code> and <code>rows</code> are averages per execution. Multiply by <code>loops</code> to get the real total: 0.014 ms × 50,000 ≈ 700 ms; 3 rows × 50,000 = 150,000 rows.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">A <code>Hash Join</code> node reads <code>cost=0.00..15000.00</code>. What does 15000 represent?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true">The cumulative estimated cost of the Hash Join plus everything beneath it — not the join step alone.</button>
+            <button class="option" data-correct="false">The cost of only the hashing and probing work this node performs, in isolation.</button>
+            <button class="option" data-correct="false">The actual measured execution time in milliseconds.</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Costs are cumulative upward: an upper-level node's total cost already includes the cost of every child node beneath it. To find a node's own contribution, subtract its children's totals from its own.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">If you replace <code>idx(merchant_id)</code> with a composite <code>idx(merchant_id, status)</code>, what should change in the <code>Index Scan</code> node's output?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p><code>status</code> moves out of the <code>Filter</code> line and into the <code>Index Cond</code> line, alongside <code>merchant_id</code>. <code>Rows Removed by Filter</code> on that node drops from 8,734 per loop to at or near 0, because non-matching rows are now skipped during the B-tree traversal instead of being fetched from the heap and discarded afterward. The planner's row estimate for the node should also improve, since it can now use the combined selectivity of both columns.</p>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+      document.querySelectorAll('td[data-score]').forEach(applyHeat);
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Flip cards (unused here — dl format instead — kept for template parity) ──
+    document.querySelectorAll('.term-card').forEach(card => {
+      const toggle = () => card.classList.toggle('flipped');
+      card.addEventListener('click', toggle);
+      card.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(); }});
+    });
+
+    // ── Comparison table heatmap (unused — plain compare tables here) ──
+    function applyHeat(cell) {
+      const score = +cell.dataset.score;
+      cell.style.background = `hsl(${score * 1.2}, 60%, ${root.dataset.theme === 'dark' ? '25%' : '88%'})`;
+    }
+    document.querySelectorAll('td[data-score]').forEach(applyHeat);
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls (ALGORITHM TRACE: worked plan tree, diagnostic order) ──
+    const steps = [
+      { activate: ['#root-box', '#root-stats', '#root-gap'],
+        explanation: 'Start at the top. The Nested Loop estimated 12 rows and actually produced 48,213 — a 4,000× gap. That number is real, but it is usually just an echo of a problem lower in the tree. Go down before you conclude anything.' },
+      { activate: ['#root-box', '#root-stats', '#root-gap', '#left-box', '#left-stats', '#left-filter', '#left-gap'],
+        explanation: 'Check the left child. Seq Scan on merchants: estimated 4, actual 40 — a 10× gap. Under roughly 10× is normal planner noise. This branch is not the problem.' },
+      { activate: ['#root-box', '#root-stats', '#root-gap', '#left-box', '#left-stats', '#left-filter', '#left-gap', '#right-box', '#right-stats', '#right-indexcond', '#right-gap'],
+        explanation: 'Check the right child. Index Scan on transactions: estimated 3, actual 1,205 — a 400× gap, and this is the LOWEST node in the tree where a divergence this large first appears. This is the cause. The top node’s 4,000× gap is only its echo.' },
+      { activate: ['#root-box', '#root-stats', '#root-gap', '#left-box', '#left-stats', '#left-filter', '#left-gap', '#right-box', '#right-stats', '#right-indexcond', '#right-gap', '#right-loopscallout'],
+        explanation: 'This node has loops=40, so actual time is a per-loop average. 1030.412 ms × 40 ≈ 41,238 ms — matching the top node’s actual time almost exactly. This one inner node is the entire query.' },
+      { activate: ['#root-box', '#root-stats', '#root-gap', '#left-box', '#left-stats', '#left-filter', '#left-gap', '#right-box', '#right-stats', '#right-indexcond', '#right-gap', '#right-loopscallout', '#right-filterline', '#right-removedcallout'],
+        explanation: 'Rows Removed by Filter: 8,734 per loop × 40 loops ≈ 350,000 rows fetched from the heap and thrown away. The index covers merchant_id only, so status is checked in Filter — after the fetch, not during the traversal.' },
+      { activate: ['#root-box', '#root-stats', '#root-gap', '#left-box', '#left-stats', '#left-filter', '#left-gap', '#right-box', '#right-stats', '#right-indexcond', '#right-gap', '#right-loopscallout', '#right-filterline', '#right-removedcallout', '#fix-group'],
+        explanation: 'Fix: extend the index to (merchant_id, status). status moves from Filter into Index Cond, so non-matching rows are skipped in the B-tree and never fetched — eliminating the 350,000 wasted heap fetches and giving the planner a far better row estimate.' },
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .step-el').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'query-planning':      { title: 'Query Planning & Optimization — How the Database Picks a Plan', summary: 'The planner as a search engine with a cost function, not a translator: the parser/rewriter/planner/executor path, paths vs plans, cost as arithmetic on top of cardinality, and the estimate-vs-cost-model split that decides every fix.' },
+      'join-algorithms':     { title: 'Join Algorithms — Nested Loop, Hash Join & Merge Join', summary: 'Three answers to one lookup question: nested loop, hash join (work_mem × hash_mem_multiplier cliff), and merge join; plus the row-estimate cliff that makes a wrong nested loop degrade without bound.' },
+      'sql-fundamentals':    { title: 'SQL Fundamentals — Joins, Aggregations, Subqueries & CTEs', summary: 'Logical evaluation order as the master key; the cross-product join model, GROUP BY grain change, the NOT IN NULL trap vs NOT EXISTS, and CTEs with the Postgres 12 inlining rule.' },
+      'btree-indexes':       { title: 'B-tree Indexes — Structure & How Range/Equality Queries Use Them', summary: 'How a B-tree turns O(n) scans into O(log n) on-disk lookups; equality vs range traversal, ORDER BY for free, write tax, and why f(column) defeats the index.' },
+      'composite-indexes':   { title: 'Composite Indexes — Column Order & the Leftmost-Prefix Rule', summary: 'The phone-book sort, the leftmost-prefix rule, equality-before-range column ordering, why one composite ≠ two singles, and bitmap/skip scans.' },
+      'covering-indexes':    { title: 'Covering Indexes & Index-Only Scans', summary: 'Answering a query from the index alone: INCLUDE payload columns, eliminating heap fetches, and why Postgres’s visibility map / MVCC can still force heap access.' },
+      'buffer-pool':         { title: 'Buffer Pool / Page Cache — How a DB Manages Memory', summary: '8KB pages cached in shared_buffers; buffer table/descriptors, clock-sweep eviction (approx LRU), WAL-flush-before-dirty-write, ring buffers, and double buffering vs the OS cache.' },
+      'heap-storage-layout': { title: 'How Data Is Stored on Disk — Heap Files, Pages & Slots', summary: 'Heap files → 8 KB pages → line-pointer slots; TID indirection (logical slot vs physical bytes), relfilenode rewrites, forks/TOAST, and the torn-page → full-page-write hazard.' },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

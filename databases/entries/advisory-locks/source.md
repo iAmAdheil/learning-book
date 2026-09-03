@@ -5,7 +5,7 @@ topic: databases
 bloom-level: some
 created: 2026-08-15
 updated: 2026-08-23
-published: null
+published: 2026-09-03
 related: [select-for-update-skip-locked, two-phase-locking, deadlocks, isolation-levels, optimistic-vs-pessimistic-locking]
 tags: [transactions, advisory-lock, pg-advisory-lock, pg-try-advisory-lock, pg-advisory-xact-lock, session-level-lock, transaction-level-lock, mutual-exclusion, distributed-lock, leader-election, cron-singleton, pg-locks, max-locks-per-transaction, pgbouncer, connection-pooling, dangling-lock, interview-priority]
 sources:

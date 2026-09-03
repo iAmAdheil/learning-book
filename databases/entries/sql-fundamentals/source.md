@@ -5,7 +5,7 @@ topic: databases
 bloom-level: some
 created: 2026-08-24
 updated: 2026-09-01
-published: null
+published: 2026-09-03
 related: [relational-data-model, schema-design-normalization, btree-indexes, composite-indexes, mvcc, select-for-update-skip-locked, isolation-levels, denormalization, window-functions, join-algorithms, query-planning, explain-analyze]
 tags: [sql, select, join, inner-join, left-join, outer-join, cross-join, cartesian-product, on-vs-where, using, natural-join, lateral, join-fan-out, aggregation, group-by, having, count-star, filter-clause, conditional-aggregation, null-semantics, three-valued-logic, subquery, scalar-subquery, correlated-subquery, exists, not-exists, not-in-trap, any-all, anti-join, semi-join, cte, with-query, materialized, not-materialized, optimization-fence, recursive-cte, working-table, data-modifying-cte, returning, logical-evaluation-order, alias-scope, grouping-sets, rollup, cube, interview-priority]
 sources:

@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions &amp; Frames</title>
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Local styling for the inline before/after window-frame diagram */
+    .win-table { width: 100%; border-collapse: collapse; margin: 1rem 0; }
+    .win-table th, .win-table td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; font-size: 0.92rem; }
+    .win-table code { white-space: nowrap; }
+    .diagram-svg .reveal { opacity: 0; transition: opacity 300ms ease; }
+    .diagram-svg .reveal.active { opacity: 1; }
+    .diagram-svg .row-rect { fill: var(--surface-elev); stroke: var(--border); stroke-width: 1; }
+    .diagram-svg .peer-rect { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+    .diagram-svg text { fill: var(--text); }
+    .diagram-svg .hdr-text { font-weight: 700; font-size: 13px; }
+    .diagram-svg .cap-text { font-size: 13px; opacity: 0.8; }
+    .diagram-svg .muted-text { fill: var(--text-muted); font-size: 11px; font-style: italic; }
+    .evalorder { font-family: var(--mono); font-size: 0.82rem; background: var(--surface-elev); border: 1px solid var(--border); border-radius: 6px; padding: 0.75rem 1rem; overflow-x: auto; }
+    .evalorder .hit { color: var(--accent); font-weight: 700; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>Window Functions — RANK, ROW_NUMBER, LAG/LEAD, Partitions &amp; Frames</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">A window function computes an aggregate — a sum, a rank, a running total — <strong>without collapsing the rows it aggregated over</strong>. Where <code>GROUP BY</code> turns many rows into one, a window function stamps the group's answer onto every row and lets each row keep its own identity. That single difference is why SQL can answer "this transaction, and also its merchant's running total" in one pass.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">sql</span>
+        <span class="badge tag">window-function</span>
+        <span class="badge tag">over-clause</span>
+        <span class="badge tag">partition-by</span>
+        <span class="badge tag">rows-vs-range</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-24 · Updated 2026-08-31</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>Window function</dt>
+        <dd>A calculation over a set of related rows that leaves every row in the output — one output row per input row, not one per group.</dd>
+
+        <dt><code>PARTITION BY</code></dt>
+        <dd>Splits rows into groups for the window function to look at, the same way <code>GROUP BY</code> does — but without merging the group into one row.</dd>
+
+        <dt>Window <code>ORDER BY</code></dt>
+        <dd>The <code>ORDER BY</code> written inside <code>OVER(...)</code>. It decides what "before this row" means for ranking, <code>LAG</code>, and running totals. It is separate from the query's own trailing <code>ORDER BY</code>, which only decides print order.</dd>
+
+        <dt>Frame clause</dt>
+        <dd>The <code>ROWS</code>/<code>RANGE</code>/<code>GROUPS BETWEEN ...</code> part of <code>OVER(...)</code>. It picks which slice of the ordered partition a given row's calculation actually sees — the whole partition, a running prefix, or a fixed-size neighbourhood.</dd>
+
+        <dt>Peer group</dt>
+        <dd>Rows the window's <code>ORDER BY</code> cannot tell apart — they are tied on the ordering key. Ranking functions and the default frame both treat a peer group as a single unit, which is the root of most window-function surprises.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>Before window functions, seeing a row next to a group total meant computing the total separately and joining it back:</p>
+      <pre><code class="lang-sql">-- The old way: aggregate in a subquery, join back to recover the rows
+SELECT t.txn_id, t.amount, m.merchant_total
+FROM transactions t
+JOIN (SELECT merchant_id, SUM(amount) AS merchant_total
+      FROM transactions GROUP BY merchant_id) m USING (merchant_id);</code></pre>
+      <p>A window function says the same thing in one pass, one clause, no join:</p>
+      <pre><code class="lang-sql">SELECT txn_id, merchant_id, amount,
+       SUM(amount) OVER (PARTITION BY merchant_id) AS merchant_total
+FROM transactions;</code></pre>
+      <p>Run against four rows across two merchants, the result keeps every row and adds one column:</p>
+      <table class="win-table">
+        <thead><tr><th>txn_id</th><th>merchant_id</th><th>amount</th><th>merchant_total</th></tr></thead>
+        <tbody>
+          <tr><td>1</td><td>501</td><td>40</td><td>90</td></tr>
+          <tr><td>2</td><td>501</td><td>50</td><td>90</td></tr>
+          <tr><td>3</td><td>900</td><td>20</td><td>45</td></tr>
+          <tr><td>4</td><td>900</td><td>25</td><td>45</td></tr>
+        </tbody>
+      </table>
+      <p>Four rows in, four rows out. Each row still shows its own <code>txn_id</code> and <code>amount</code>, and <code>merchant_total</code> is the same number for every row that shares a <code>merchant_id</code> — the partition's answer, stamped onto each of its rows.</p>
+
+      <p>The single most common production use of this idea is <strong>top-N per group</strong>. Rank inside a partition with <code>ROW_NUMBER</code>, then keep only the top rows:</p>
+      <pre><code class="lang-sql">WITH ranked AS (
+    SELECT merchant_id, txn_id, amount,
+           ROW_NUMBER() OVER (PARTITION BY merchant_id
+                              ORDER BY amount DESC, txn_id) AS rn
+    FROM transactions
+    WHERE status = 'SUCCESS'          -- filter first: this step runs before ranking
+)
+SELECT * FROM ranked WHERE rn &lt;= 3;</code></pre>
+      <p>Filtering <code>status = 'SUCCESS'</code> inside the CTE shrinks the input before ranking runs, and it changes the question being asked: ranks are computed among successful transactions only. Filtering outside would rank everything first and discard afterward — slower, and a different answer.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Think of a window function as a clerk who walks down a sorted stack of rows with a small movable window over part of the stack. At each row, the clerk looks only through the window, computes one number, and writes it on that row before moving on. The two hardest questions are: <em>what happens when two rows in the window tie</em>, and <em>how big is the window</em>. Step through both below — same idea, two different tables.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">7</span></div>
+        <svg class="diagram-svg" viewBox="0 0 640 470" aria-label="Two before/after tables: ranking functions on a tied partition, then RANGE vs ROWS running totals on a tied partition.">
+
+          <!-- ============ TABLE A: ranking functions ============ -->
+          <text class="cap-text" x="320" y="18" text-anchor="middle">Table A — <tspan font-family="var(--mono)">ORDER BY amount DESC</tspan> (ties: 90, 90)</text>
+
+          <text class="hdr-text" x="110" y="46" text-anchor="middle">amount</text>
+          <text class="hdr-text reveal col-rn" id="hdr-rn" x="255" y="46" text-anchor="middle">ROW_NUMBER()</text>
+          <text class="hdr-text reveal col-rk" id="hdr-rk" x="395" y="46" text-anchor="middle">RANK()</text>
+          <text class="hdr-text reveal col-dr" id="hdr-dr" x="535" y="46" text-anchor="middle">DENSE_RANK()</text>
+
+          <!-- peer highlight band behind the tied 90/90 rows -->
+          <rect class="peer-rect reveal" id="peer-band-a" x="20" y="92" width="600" height="76" rx="8"></rect>
+
+          <!-- row backgrounds -->
+          <rect class="row-rect" x="20" y="56"  width="600" height="32" rx="5"></rect>
+          <rect class="row-rect" x="20" y="94"  width="600" height="32" rx="5"></rect>
+          <rect class="row-rect" x="20" y="132" width="600" height="32" rx="5"></rect>
+          <rect class="row-rect" x="20" y="170" width="600" height="32" rx="5"></rect>
+
+          <!-- amount column (always visible) -->
+          <text x="110" y="76"  text-anchor="middle">100</text>
+          <text x="110" y="114" text-anchor="middle">90</text>
+          <text x="110" y="152" text-anchor="middle">90</text>
+          <text x="110" y="190" text-anchor="middle">80</text>
+
+          <!-- ROW_NUMBER column -->
+          <text class="reveal col-rn" id="rn-0" x="255" y="76"  text-anchor="middle">1</text>
+          <text class="reveal col-rn" id="rn-1" x="255" y="114" text-anchor="middle">2</text>
+          <text class="reveal col-rn" id="rn-2" x="255" y="152" text-anchor="middle">3</text>
+          <text class="reveal col-rn" id="rn-3" x="255" y="190" text-anchor="middle">4</text>
+
+          <!-- RANK column -->
+          <text class="reveal col-rk" id="rk-0" x="395" y="76"  text-anchor="middle">1</text>
+          <text class="reveal col-rk" id="rk-1" x="395" y="114" text-anchor="middle">2</text>
+          <text class="reveal col-rk" id="rk-2" x="395" y="152" text-anchor="middle">2</text>
+          <text class="reveal col-rk" id="rk-3" x="395" y="190" text-anchor="middle">4</text>
+          <text class="muted-text reveal col-rk" id="gap-marker-rk" x="450" y="190" text-anchor="start">← skips 3</text>
+
+          <!-- DENSE_RANK column -->
+          <text class="reveal col-dr" id="dr-0" x="535" y="76"  text-anchor="middle">1</text>
+          <text class="reveal col-dr" id="dr-1" x="535" y="114" text-anchor="middle">2</text>
+          <text class="reveal col-dr" id="dr-2" x="535" y="152" text-anchor="middle">2</text>
+          <text class="reveal col-dr" id="dr-3" x="535" y="190" text-anchor="middle">3</text>
+          <text class="muted-text reveal col-dr" id="compact-marker-dr" x="580" y="190" text-anchor="start">← no gap</text>
+
+          <!-- ============ TABLE B: RANGE vs ROWS ============ -->
+          <g id="table-b" class="reveal">
+            <text class="cap-text" x="320" y="228" text-anchor="middle">Table B — running total, <tspan font-family="var(--mono)">ORDER BY day</tspan> (peers: two rows on d2)</text>
+
+            <text class="hdr-text" x="80"  y="256" text-anchor="middle">day</text>
+            <text class="hdr-text" x="180" y="256" text-anchor="middle">amount</text>
+            <text class="hdr-text reveal col-range" id="hdr-range" x="360" y="256" text-anchor="middle">RANGE total (default)</text>
+            <text class="hdr-text reveal col-rows"  id="hdr-rows"  x="560" y="256" text-anchor="middle">ROWS total</text>
+
+            <rect class="peer-rect reveal" id="peer-band-b" x="20" y="302" width="600" height="76" rx="8"></rect>
+
+            <rect class="row-rect" x="20" y="266" width="600" height="32" rx="5"></rect>
+            <rect class="row-rect" x="20" y="304" width="600" height="32" rx="5"></rect>
+            <rect class="row-rect" x="20" y="342" width="600" height="32" rx="5"></rect>
+            <rect class="row-rect" x="20" y="380" width="600" height="32" rx="5"></rect>
+
+            <text x="80" y="286" text-anchor="middle">d1</text>
+            <text x="80" y="324" text-anchor="middle">d2</text>
+            <text x="80" y="362" text-anchor="middle">d2</text>
+            <text x="80" y="400" text-anchor="middle">d3</text>
+
+            <text x="180" y="286" text-anchor="middle">100</text>
+            <text x="180" y="324" text-anchor="middle">50</text>
+            <text x="180" y="362" text-anchor="middle">30</text>
+            <text x="180" y="400" text-anchor="middle">20</text>
+
+            <text class="reveal col-range" id="range-0" x="360" y="286" text-anchor="middle">100</text>
+            <text class="reveal col-range" id="range-1" x="360" y="324" text-anchor="middle">180</text>
+            <text class="reveal col-range" id="range-2" x="360" y="362" text-anchor="middle">180</text>
+            <text class="reveal col-range" id="range-3" x="360" y="400" text-anchor="middle">200</text>
+            <text class="muted-text reveal col-range" id="stall-note" x="420" y="343" text-anchor="start">← stalls: both peers share one total</text>
+
+            <text class="reveal col-rows" id="rows-0" x="560" y="286" text-anchor="middle">100</text>
+            <text class="reveal col-rows" id="rows-1" x="560" y="324" text-anchor="middle">150</text>
+            <text class="reveal col-rows" id="rows-2" x="560" y="362" text-anchor="middle">180</text>
+            <text class="reveal col-rows" id="rows-3" x="560" y="400" text-anchor="middle">200</text>
+          </g>
+
+          <text class="muted-text" x="320" y="452" text-anchor="middle">All four ranking functions and RANGE/GROUPS frames are defined in terms of the peer group.</text>
+        </svg>
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation"></p>
+      </div>
+
+      <p>Both tables show the same rule from two angles: <strong>a peer group is one unit, and every function or frame has to decide what "one unit" means.</strong> <code>ROW_NUMBER</code> ignores peers entirely; <code>RANK</code>/<code>DENSE_RANK</code> share a rank across them but disagree on whether to leave a gap; and the default <code>RANGE</code> frame shares one running total across them, while <code>ROWS</code> refuses to.</p>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+        <h3>Why window functions can't appear in <code>WHERE</code></h3>
+        <p>SQL evaluates a query in a fixed order, and window functions slot in late — after <code>WHERE</code> and <code>GROUP BY</code>/<code>HAVING</code>, before <code>DISTINCT</code> and the final <code>ORDER BY</code>:</p>
+        <div class="evalorder">3. WHERE          -&gt; filter rows
+4. GROUP BY       -&gt; collapse into groups
+   HAVING         -&gt; filter groups
+<span class="hit">4.5 WINDOW FUNCTIONS  &lt;- computed here</span>
+5. SELECT         -&gt; output expressions
+6. DISTINCT   7. UNION   8. ORDER BY   9. LIMIT</div>
+        <p>By the time step 4.5 runs, <code>WHERE</code> (step 3) has already finished. There is no way for <code>WHERE</code> to filter on a value that does not exist yet.</p>
+
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> filtering directly on a window function in <code>WHERE</code>.
+          <pre><code class="lang-sql">-- ERROR:  window functions are not allowed in WHERE
+SELECT merchant_id, txn_id,
+       ROW_NUMBER() OVER (PARTITION BY merchant_id ORDER BY amount DESC) AS rn
+FROM transactions
+WHERE rn &lt;= 3;</code></pre>
+          <p>This fails for a structural reason, not a syntax slip. <strong>The fix is to wrap the query</strong>: a subquery or CTE finishes one query's evaluation entirely, so in the outer query the window result is an ordinary column with no window nature left, and an ordinary <code>WHERE</code> can filter it.</p>
+          <pre><code class="lang-sql">WITH ranked AS (
+    SELECT merchant_id, txn_id,
+           ROW_NUMBER() OVER (PARTITION BY merchant_id ORDER BY amount DESC) AS rn
+    FROM transactions
+)
+SELECT * FROM ranked WHERE rn &lt;= 3;</code></pre>
+          <p>One exception: the query's own trailing <code>ORDER BY</code> <em>is</em> allowed to reference a window function, because it runs at step 8 — after window functions have already been computed.</p>
+        </div>
+
+        <h3><code>LAST_VALUE</code> returns the current row, not the last row</h3>
+        <p>The default frame is <code>RANGE UNBOUNDED PRECEDING</code>, meaning "from the partition start through the current row's last peer." <code>FIRST_VALUE</code> looks correct only because the frame's <em>start</em> happens to be the partition start. <code>LAST_VALUE</code> is not so lucky — the frame's <em>end</em> is the current row, so "the last row of the frame" is the current row itself.</p>
+        <pre><code class="lang-sql">-- WRONG: returns the CURRENT row's own amount on every row
+LAST_VALUE(amount) OVER (PARTITION BY merchant_id ORDER BY created_at)
+
+-- FIX: open the frame at both ends
+LAST_VALUE(amount) OVER (PARTITION BY merchant_id ORDER BY created_at
+                         ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING)
+
+-- OR sidestep it entirely
+FIRST_VALUE(amount) OVER (PARTITION BY merchant_id ORDER BY created_at DESC)</code></pre>
+
+        <h3>Deciding <code>ROWS</code> vs <code>RANGE</code></h3>
+        <p>The rule of thumb that resolves almost every case: <strong>"the last 7 rows" is <code>ROWS</code>; "the last 7 days" is <code>RANGE</code>.</strong> They differ whenever row density varies — a 7-<em>row</em> average and a 7-<em>day</em> average are the same query only on days with exactly one row. If the ordering column can contain duplicates and the goal is strict row-by-row accumulation, write <code>ROWS</code> explicitly rather than relying on the default.</p>
+
+        <h3>The idea behind sessionization and gaps-and-islands</h3>
+        <p><code>GROUP BY</code> can only group on equality of a value — it cannot see a <em>relationship between rows</em>, such as "adjacent" or "no gap since the previous row." The fix is always the same move: compute that relationship into a per-row value that stays constant across the rows that belong together, then group by the constant.</p>
+        <table class="win-table">
+          <thead><tr><th>Problem</th><th>The relationship</th><th>The constant it becomes</th></tr></thead>
+          <tbody>
+            <tr><td>Sessionize on an idle gap</td><td>"no gap &gt; 30 min since the previous row"</td><td>running <code>SUM</code> of a 0/1 boundary flag from <code>LAG</code></td></tr>
+            <tr><td>Runs of consecutive dates</td><td>"this date is the previous date + 1"</td><td><code>date - ROW_NUMBER() OVER (ORDER BY date)</code></td></tr>
+          </tbody>
+        </table>
+        <p>A running <code>SUM</code> over a 0/1 flag is a counter that only increments at boundaries, so every row between two boundaries carries the same total — that total <em>is</em> the session id. For consecutive dates, the date and the row number both increase by exactly 1 per row, so their difference is constant within a run and jumps only at a break.</p>
+
+        <h3>Cost: a window function needs its partition sorted</h3>
+        <p><code>EXPLAIN</code> shows a <code>WindowAgg</code> node with a <code>Sort</code> or an <code>Index Scan</code> directly beneath it. An index matching <code>(partition_key, order_key)</code> can supply the rows pre-sorted and remove the <code>Sort</code> entirely — the same leftmost-prefix logic as any composite index. Several functions sharing one named window cost <strong>one</strong> sort; each distinct window costs its own.</p>
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../sql-fundamentals/index.html" data-entry="sql-fundamentals">
+        <strong>SQL Fundamentals</strong>
+        <span>Establishes the logical evaluation order that window functions slot into at step 4.5, and the <code>GROUP BY</code> grain change that window functions exist to avoid.</span>
+      </a>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>Tables as sets of tuples — the row-per-tuple grain that a window function is careful to preserve while <code>GROUP BY</code> collapses it.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes</strong>
+        <span>The sorted structure a window function's partition needs; a matching index can hand it pre-sorted rows and remove the planner's <code>Sort</code> step.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes</strong>
+        <span>An index on <code>(partition_key, order_key)</code> that eliminates a window function's sort is exactly a leftmost-prefix composite index.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization</strong>
+        <span>Storing a running total or rank as a column is the denormalized alternative to computing it fresh with a window function on every read.</span>
+      </a>
+      <a class="related-card" href="../heap-storage-layout/index.html" data-entry="heap-storage-layout">
+        <strong>Heap Storage Layout</strong>
+        <span>The window-function deduplication pattern deletes duplicate rows using <code>ctid</code>, the physical tuple identifier this entry explains.</span>
+      </a>
+      <a class="related-card" href="../join-algorithms/index.html" data-entry="join-algorithms">
+        <strong>Join Algorithms</strong>
+        <span>The pre-window workaround — aggregate in a subquery, then join it back — pays for exactly the join cost this entry breaks down.</span>
+      </a>
+      <a class="related-card" href="../query-planning/index.html" data-entry="query-planning">
+        <strong>Query Planning &amp; Optimization</strong>
+        <span>The same planner that produces a <code>WindowAgg</code> node fed by a <code>Sort</code> or <code>Index Scan</code> is the subject of this entry.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/tutorial-window.html" target="_blank" rel="noopener">PostgreSQL Documentation — 3.5. Window Functions (tutorial)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-expressions.html#SYNTAX-WINDOW-FUNCTIONS" target="_blank" rel="noopener">PostgreSQL Documentation — 4.2.8. Window Function Calls (frame clause syntax)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/functions-window.html" target="_blank" rel="noopener">PostgreSQL Documentation — 9.22. Window Functions (function reference)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-select.html" target="_blank" rel="noopener">PostgreSQL Documentation — SELECT (logical processing order, WINDOW clause)</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">You need exactly the top 3 highest-paid employees per department — never more than 3, even if salaries tie. Which function do you rank with?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="true"><code>ROW_NUMBER()</code></button>
+            <button class="option" data-correct="false"><code>RANK()</code></button>
+            <button class="option" data-correct="false"><code>DENSE_RANK()</code></button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text"><code>ROW_NUMBER()</code> never repeats a value, so filtering <code>rn &lt;= 3</code> always returns exactly 3 rows per partition. <code>RANK()</code> or <code>DENSE_RANK()</code> could let a 3-way tie for 3rd place widen the group past 3 rows.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text"><code>SUM(amount) OVER (PARTITION BY merchant_id ORDER BY created_at)</code> is written with no explicit frame clause. Two rows share the same <code>created_at</code> value. What do those two rows see?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Each row sees its own running total, stopping at itself</button>
+            <button class="option" data-correct="true">Both rows see the identical total, including each other's amount</button>
+            <button class="option" data-correct="false"><code>NULL</code>, because ties make the frame undefined</button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">The default frame is <code>RANGE UNBOUNDED PRECEDING</code>, and in <code>RANGE</code> mode <code>CURRENT ROW</code> means the current row's <em>last peer</em>. Tied rows share one frame, so the running total stalls at one shared value across both of them.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">You write <code>LAST_VALUE(amount) OVER (PARTITION BY merchant_id ORDER BY created_at)</code> with no explicit frame, expecting the merchant's most recent transaction amount stamped on every row. What actually happens, and why?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>Every row gets close to its own amount back, not the merchant's true last transaction. The default frame ends at <code>CURRENT ROW</code>'s last peer, so "the last value in the frame" is the current row itself (or its peer) on every single row — the frame never reaches the actual end of the partition. The fix is to open the frame explicitly with <code>ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING</code>, or to use <code>FIRST_VALUE</code> with the window's <code>ORDER BY</code> reversed.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Step-reveal controls for the before/after window diagram ──
+    const steps = [
+      {
+        activate: ['#peer-band-a'],
+        explanation: 'Four rows, ordered by amount descending: 100, 90, 90, 80. The two 90s are peers — rows the window’s ORDER BY cannot tell apart. Every ranking function treats a peer group as one unit, just differently.'
+      },
+      {
+        activate: ['#peer-band-a', '.col-rn'],
+        explanation: 'ROW_NUMBER() numbers every row 1..4 with no repeats, tie or not. The two 90s get 2 and 3 — which one gets which is arbitrary unless the ORDER BY includes a tiebreaker column.'
+      },
+      {
+        activate: ['#peer-band-a', '.col-rk'],
+        explanation: 'RANK() gives both 90s the same rank, 2. The next row then jumps straight to 4 — rank() is literally “the row_number of the first row in its peer group,” so a 2-row peer group leaves a gap.'
+      },
+      {
+        activate: ['#peer-band-a', '.col-dr'],
+        explanation: 'DENSE_RANK() also gives both 90s rank 2, but the next row is 3, not 4. It counts peer groups instead of rows, so there is never a gap — this is the function for “the 3rd-highest distinct value.”'
+      },
+      {
+        activate: ['#table-b', '#peer-band-b'],
+        explanation: 'Switch tables: four transactions ordered by day. d2 has two rows — another peer group, this time tied on the ORDER BY column itself rather than on a ranking function’s input.'
+      },
+      {
+        activate: ['#table-b', '#peer-band-b', '.col-range'],
+        explanation: 'Under the default frame (RANGE UNBOUNDED PRECEDING), a row’s frame ends at its LAST peer. Both d2 rows therefore share the identical frame and the identical total, 180 — the running total stalls across the tie.'
+      },
+      {
+        activate: ['#table-b', '#peer-band-b', '.col-rows'],
+        explanation: 'Write ROWS instead of RANGE and CURRENT ROW means the literal current row. The same two d2 transactions now get different totals, 150 then 180 — one row at a time, tie or not.'
+      }
+    ];
+    let currentStep = 0;
+    const stepNum = document.getElementById('step-num');
+    const stepTotal = document.getElementById('step-total');
+    const stepExp = document.getElementById('step-explanation');
+    const prevBtn = document.getElementById('prev-btn');
+    const nextBtn = document.getElementById('next-btn');
+    const resetBtn = document.getElementById('reset-btn');
+
+    if (steps.length && stepTotal) {
+      stepTotal.textContent = steps.length;
+
+      function applyStep(i) {
+        document.querySelectorAll('.diagram-svg .reveal').forEach(el => el.classList.remove('active'));
+        if (steps[i].activate) steps[i].activate.forEach(sel => {
+          document.querySelectorAll(sel).forEach(el => el.classList.add('active'));
+        });
+        if (stepExp) stepExp.textContent = steps[i].explanation || '';
+        if (stepNum) stepNum.textContent = i + 1;
+        prevBtn.disabled = i === 0;
+        nextBtn.disabled = i === steps.length - 1;
+      }
+
+      applyStep(0);
+      prevBtn.addEventListener('click', () => { if (currentStep > 0) applyStep(--currentStep); });
+      nextBtn.addEventListener('click', () => { if (currentStep < steps.length - 1) applyStep(++currentStep); });
+      resetBtn.addEventListener('click', () => { currentStep = 0; applyStep(0); });
+    }
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'sql-fundamentals':      { title: 'SQL Fundamentals', summary: 'Logical evaluation order as the master key, plus joins, GROUP BY, subqueries, and CTEs.' },
+      'relational-data-model': { title: 'Relational Data Model', summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation of SQL.' },
+      'btree-indexes':         { title: 'B-tree Indexes', summary: 'How a B-tree turns O(n) scans into O(log n) lookups on disk; equality vs range traversal and ORDER BY for free.' },
+      'composite-indexes':     { title: 'Composite Indexes', summary: 'The leftmost-prefix rule, equality-before-range column ordering, and why one composite index is not two single-column ones.' },
+      'denormalization':       { title: 'Denormalization', summary: 'Trading write complexity for read speed: counter columns, redundant copies, and materialized views.' },
+      'heap-storage-layout':   { title: 'Heap Storage Layout', summary: 'Heap files → 8 KB pages → line-pointer slots, and the ctid tuple identifier.' },
+      'join-algorithms':       { title: 'Join Algorithms', summary: 'Nested loop, hash join, and merge join — three answers to one lookup question.' },
+      'query-planning':        { title: 'Query Planning & Optimization', summary: 'How the planner turns a query into a cost-estimated plan tree.' }
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>

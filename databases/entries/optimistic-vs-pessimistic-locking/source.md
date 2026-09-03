@@ -5,7 +5,7 @@ topic: databases
 bloom-level: working
 created: 2026-08-23
 updated: 2026-08-23
-published: null
+published: 2026-09-03
 related: [select-for-update-skip-locked, mvcc, isolation-levels, two-phase-locking, deadlocks, advisory-locks]
 tags: [transactions, optimistic-locking, pessimistic-locking, occ, optimistic-concurrency-control, lost-update, read-modify-write, conflict-window, version-column, compare-and-swap, validation, evalplanqual, read-committed, repeatable-read, 40001, serialization-failure, retry, exponential-backoff, starvation, livelock, write-skew, phantom, aba-problem, atomic-update, kung-robinson, jpa-version, sqlalchemy-version-id-col, connection-pool-exhaustion, idempotency, interview-priority]
 sources:

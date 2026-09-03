@@ -1,0 +1,648 @@
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs — databases</title>
+  <!-- Anti-flash dark mode: runs before first paint -->
+  <script>
+    (function() {
+      const saved = localStorage.getItem('teach-theme');
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.dataset.theme = saved || (prefersDark ? 'dark' : 'light');
+    })();
+  </script>
+  <link rel="stylesheet" href="../../assets/style.css" />
+  <style>
+    /* Local styling for the logical-evaluation-order trace diagram */
+    .eval-trace {
+      display: grid;
+      grid-template-columns: minmax(220px, 1fr) minmax(240px, 1.1fr);
+      gap: 1.25rem;
+      align-items: start;
+    }
+    @media (max-width: 720px) {
+      .eval-trace { grid-template-columns: 1fr; }
+    }
+    .eval-code-label { font-size: 0.78rem; color: var(--text-muted); margin: 0 0 0.35rem; text-transform: uppercase; letter-spacing: .03em; }
+    .eval-query {
+      background: var(--surface-elev);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.85rem 1rem;
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      line-height: 1.9;
+      overflow-x: auto;
+    }
+    .clause {
+      display: block;
+      padding: 0.05rem 0.4rem;
+      border-radius: 4px;
+      opacity: 0.4;
+      transition: opacity 300ms ease, background 300ms ease;
+    }
+    .clause.active { opacity: 1; background: var(--accent-soft); font-weight: 700; }
+    .eval-table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 0.8rem; margin-top: 0.25rem; }
+    .eval-table caption { text-align: left; font-family: var(--font); font-size: 0.78rem; color: var(--text-muted); margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: .03em; }
+    .eval-table th, .eval-table td { border: 1px solid var(--border); padding: 0.3rem 0.55rem; text-align: left; }
+    .eval-table th { background: var(--surface-elev); font-family: var(--font); }
+    .eval-row { transition: opacity 300ms ease, background 300ms ease; }
+    .eval-row.excluded { opacity: 0.35; text-decoration: line-through; }
+    .eval-order-note { font-size: 0.78rem; color: var(--text-muted); margin-top: 0.4rem; }
+    .aside-toggle {
+      margin-top: 1rem;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      padding: 0 1rem;
+    }
+    .aside-toggle summary { cursor: pointer; padding: 0.7rem 0; font-weight: 600; font-size: 0.9rem; color: var(--text-muted); list-style: none; }
+    .aside-toggle summary::-webkit-details-marker { display: none; }
+    .aside-toggle summary::before { content: '▸ '; color: var(--accent); }
+    .aside-toggle[open] summary::before { content: '▾ '; }
+    .aside-toggle p { padding-bottom: 0.9rem; font-size: 0.9rem; }
+    .term-list dt code, .term-list dd code { font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <header class="entry-header">
+    <div class="entry-nav">
+      <a class="back-link" href="../../index.html">← databases book</a>
+      <a class="back-link global" href="../../../global-index.html">⊞ All topics</a>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" aria-label="Toggle theme">◐</button>
+  </header>
+
+  <article class="entry">
+    <h1>SQL Fundamentals — Joins, Aggregations, Subqueries &amp; CTEs</h1>
+
+    <!-- Section 1: Hook -->
+    <section class="hook">
+      <p class="hook-text">SQL is a declarative language: you describe the shape of the result set you want, and the database engine decides how to produce it — which index to use, which join algorithm to run, in what order to combine tables. That gap between the query you write and the plan the engine builds is why two differently-worded queries can compile to the identical plan, and why moving one predicate four characters — from <code>ON</code> to <code>WHERE</code> — can silently change which rows come back at all.</p>
+      <div class="entry-meta">
+        <span class="bloom-badge bloom-some">Intermediate</span>
+        <span class="badge tag">sql</span>
+        <span class="badge tag">join</span>
+        <span class="badge tag">aggregation</span>
+        <span class="badge tag">subquery</span>
+        <span class="badge tag">cte</span>
+        <span class="badge tag">logical-evaluation-order</span>
+        <span class="badge tag">null-semantics</span>
+        <span class="badge tag">interview-priority</span>
+        <span class="meta-dates">Created 2026-08-24 · Updated 2026-09-01</span>
+      </div>
+    </section>
+
+    <!-- Section 2: Key Components (Pre-training) -->
+    <section id="key-components" class="key-components">
+      <h2>Key Components</h2>
+      <dl class="term-list">
+        <dt>Logical evaluation order</dt>
+        <dd>The fixed sequence — <code>FROM</code>/<code>JOIN</code>, <code>WHERE</code>, <code>GROUP BY</code>, <code>HAVING</code>, <code>SELECT</code>, <code>ORDER BY</code> — in which the database evaluates clauses, no matter what order you typed them in.</dd>
+
+        <dt>Join</dt>
+        <dd>The mechanism that reassembles rows from two tables: form the full pairing of every row against every row (a Cartesian product), keep only the pairs that satisfy a condition, and — for outer joins — add back the rows that had no match.</dd>
+
+        <dt>Aggregate function</dt>
+        <dd>A set-to-one-value reduction, such as <code>COUNT</code>, <code>SUM</code>, or <code>AVG</code> — the only legal way to reference a column once <code>GROUP BY</code> has changed one output row from meaning "one source row" to meaning "one group of source rows."</dd>
+
+        <dt>Three-valued logic</dt>
+        <dd>SQL comparisons return <code>TRUE</code>, <code>FALSE</code>, or <code>UNKNOWN</code>. Any comparison against <code>NULL</code> — including <code>x &lt;&gt; NULL</code> — evaluates to <code>UNKNOWN</code>, not <code>FALSE</code>.</dd>
+
+        <dt>Correlated subquery</dt>
+        <dd>A subquery that references a column from the query around it, so it is conceptually re-evaluated once per outer row (the planner usually turns this into a single join instead).</dd>
+
+        <dt>CTE (Common Table Expression)</dt>
+        <dd>A named subquery introduced with <code>WITH</code>, defined once and referenced by name later in the same statement — the standard SQL tool for recursion.</dd>
+      </dl>
+    </section>
+
+    <!-- Section 3: Concrete Example -->
+    <section id="concrete">
+      <h2>Concrete Example</h2>
+      <p>One running scenario — merchants, their transactions, and their settlements — carries through all four parts below, because joins, aggregation, subqueries, and CTEs are really four different questions asked about the same shape of data.</p>
+
+      <h3>Joins — the <code>ON</code>-vs-<code>WHERE</code> trap on an outer join</h3>
+      <p>Take: "settlement total per merchant for June, including merchants with no June settlements at all." That "including the zeroes" requirement forces a <code>LEFT JOIN</code>, and where the date predicate goes decides whether it actually works.</p>
+      <pre><code class="lang-sql">-- CORRECT: the date test is part of "what counts as a match"
+SELECT m.name, COALESCE(SUM(s.amount), 0) AS june_total
+FROM merchants m
+LEFT JOIN settlements s
+       ON s.merchant_id = m.merchant_id
+      AND s.settled_on &gt;= DATE '2025-06-01'
+      AND s.settled_on &lt;  DATE '2025-07-01'
+GROUP BY m.name;
+
+-- WRONG: silently an INNER JOIN
+SELECT m.name, COALESCE(SUM(s.amount), 0) AS june_total
+FROM merchants m
+LEFT JOIN settlements s ON s.merchant_id = m.merchant_id
+WHERE s.settled_on &gt;= DATE '2025-06-01'
+  AND s.settled_on &lt;  DATE '2025-07-01'
+GROUP BY m.name;</code></pre>
+      <p>The second query does pad in NULL rows for merchants with zero June settlements — then <code>WHERE</code> runs and tests <code>NULL &gt;= '2025-06-01'</code>, which is <code>UNKNOWN</code>, so every padded row is thrown away. The <code>LEFT</code> keyword is still sitting on the page, and it has been completely neutralised. <strong>Rule:</strong> a predicate on the nullable (inner) side of an outer join belongs in <code>ON</code>; a predicate on the preserved side belongs in <code>WHERE</code>.</p>
+
+      <h3>Aggregation — five counts in one pass</h3>
+      <p>Conditional aggregation turns rows into columns without a pivot table, and is the highest-value aggregation pattern for real reporting work:</p>
+      <pre><code class="lang-sql">SELECT merchant_id,
+       COUNT(*)                                    AS total,
+       COUNT(*) FILTER (WHERE status = 'SUCCESS')  AS succeeded,
+       COUNT(*) FILTER (WHERE status = 'FAILED')   AS failed,
+       SUM(amount) FILTER (WHERE method = 'UPI')   AS upi_volume,
+       ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'SUCCESS')
+                   / NULLIF(COUNT(*), 0), 2)       AS success_pct
+FROM transactions
+GROUP BY merchant_id;</code></pre>
+      <p><code>NULLIF(COUNT(*), 0)</code> converts a <code>0</code> denominator to <code>NULL</code>, so the division returns <code>NULL</code> instead of erroring — a guard worth adding to every percentage computed in SQL.</p>
+
+      <h3>Subqueries — <code>NOT IN</code> vs <code>NOT EXISTS</code></h3>
+      <p>"Customers who have never transacted" looks like a textbook <code>NOT IN</code>, and fails silently the moment the referenced column can hold a <code>NULL</code>:</p>
+      <pre><code class="lang-sql">-- Returns ZERO ROWS if transactions.customer_id contains even one NULL
+SELECT * FROM customers
+WHERE customer_id NOT IN (SELECT customer_id FROM transactions);
+
+-- Correct, and usually the plan the first query should have gotten anyway
+SELECT * FROM customers c
+WHERE NOT EXISTS (SELECT 1 FROM transactions t WHERE t.customer_id = c.customer_id);</code></pre>
+      <p><code>NOT EXISTS</code> asks a cardinality question — did any row come back? — which has exactly two answers. <code>UNKNOWN</code> has nowhere to enter. <code>NOT IN</code> asks a value-comparison question, and one stray <code>NULL</code> in the subquery's result poisons every row.</p>
+
+      <h3>CTEs — naming a two-step pipeline</h3>
+      <p>The top-3-merchants-per-month report reads as a pipeline instead of a pyramid of nested subqueries:</p>
+      <pre><code class="lang-sql">WITH monthly AS (
+    SELECT merchant_id,
+           date_trunc('month', created_at) AS month,
+           SUM(amount) AS volume
+    FROM transactions
+    WHERE status = 'SUCCESS'
+    GROUP BY 1, 2
+),
+ranked AS (
+    SELECT *, RANK() OVER (PARTITION BY month ORDER BY volume DESC) AS rk
+    FROM monthly
+)
+SELECT month, merchant_id, volume
+FROM ranked
+WHERE rk &lt;= 3
+ORDER BY month, rk;</code></pre>
+      <p>Each named step reads top to bottom. Note that <code>WHERE rk &lt;= 3</code> is legal here only because <code>rk</code> is a plain output column of the <code>ranked</code> CTE by the time the outer query's <code>WHERE</code> runs against it — <code>rk</code> is not filtered inside the same <code>SELECT</code> that computed it.</p>
+    </section>
+
+    <!-- Section 4: Visual Model -->
+    <section id="visual-model">
+      <h2>Visual Model</h2>
+      <p>Here's the mental model worth keeping: a query is a small pipeline, and the order you type its clauses in has almost nothing to do with the order the database runs them in. Step through the trace below. The query on the left never changes — only which line is <em>currently executing</em>, and what that does to the data on the right.</p>
+
+      <div class="visual-container">
+        <div class="step-info" aria-live="polite">Step <span id="step-num">1</span> of <span id="step-total">6</span></div>
+
+        <div class="eval-trace">
+          <div class="eval-code">
+            <p class="eval-code-label">Written order</p>
+            <pre class="eval-query"><code><span class="clause" id="clause-select">SELECT merchant_id, COUNT(*) AS n, AVG(amount) AS avg_amt</span>
+<span class="clause" id="clause-from">FROM transactions</span>
+<span class="clause" id="clause-where">WHERE status = 'SUCCESS'</span>
+<span class="clause" id="clause-groupby">GROUP BY merchant_id</span>
+<span class="clause" id="clause-having">HAVING COUNT(*) &gt; 1</span>
+<span class="clause" id="clause-orderby">ORDER BY avg_amt DESC;</span></code></pre>
+          </div>
+          <div class="eval-data">
+            <p class="eval-code-label">Evaluated order</p>
+            <table id="rows-table" class="eval-table">
+              <caption>transactions</caption>
+              <thead><tr><th>id</th><th>merchant_id</th><th>status</th><th>amount</th></tr></thead>
+              <tbody>
+                <tr id="row-1" class="eval-row"><td>1</td><td>M1</td><td>SUCCESS</td><td>120</td></tr>
+                <tr id="row-2" class="eval-row"><td>2</td><td>M1</td><td>SUCCESS</td><td>340</td></tr>
+                <tr id="row-3" class="eval-row"><td>3</td><td>M1</td><td>FAILED</td><td>90</td></tr>
+                <tr id="row-4" class="eval-row"><td>4</td><td>M2</td><td>SUCCESS</td><td>60</td></tr>
+                <tr id="row-5" class="eval-row"><td>5</td><td>M2</td><td>SUCCESS</td><td>45</td></tr>
+                <tr id="row-6" class="eval-row"><td>6</td><td>M3</td><td>SUCCESS</td><td>500</td></tr>
+                <tr id="row-7" class="eval-row"><td>7</td><td>M3</td><td>FAILED</td><td>200</td></tr>
+              </tbody>
+            </table>
+            <table id="groups-table" class="eval-table" hidden>
+              <caption>grouped &amp; aggregated</caption>
+              <thead><tr><th>merchant_id</th><th>n</th><th>avg_amt</th></tr></thead>
+              <tbody>
+                <tr id="grp-M1" class="eval-row" data-avg="230"><td>M1</td><td>2</td><td>230</td></tr>
+                <tr id="grp-M2" class="eval-row" data-avg="52.5"><td>M2</td><td>2</td><td>52.5</td></tr>
+                <tr id="grp-M3" class="eval-row" data-avg="500"><td>M3</td><td>1</td><td>500</td></tr>
+              </tbody>
+            </table>
+            <p class="eval-order-note" id="eval-order-note"></p>
+          </div>
+        </div>
+
+        <div class="step-controls">
+          <button class="step-btn" id="prev-btn" disabled aria-label="Previous step">← Prev</button>
+          <button class="step-btn primary" id="next-btn" aria-label="Next step">Next →</button>
+          <button class="step-btn" id="reset-btn" aria-label="Reset">↺ Reset</button>
+        </div>
+        <p class="step-explanation" id="step-explanation">FROM assembles the source rows. All 7 transactions exist right now — nothing has been filtered, grouped, or projected yet.</p>
+      </div>
+
+      <details class="aside-toggle">
+        <summary>Aside: why can't a window function go in <code>WHERE</code>?</summary>
+        <p>A window function like <code>RANK() OVER (...)</code> is computed as part of this same <code>SELECT</code> step — after <code>WHERE</code>, <code>GROUP BY</code>, and <code>HAVING</code> have already run and already discarded whatever they were going to discard. That is why <code>WHERE rk = 1</code> fails with "column rk does not exist": at the moment <code>WHERE</code> evaluates, the window function hasn't produced a value yet. The standard workaround is the one used in the CTE example above — compute the window function inside a CTE, then filter on it in a later, separate <code>SELECT</code>. See <a href="../window-functions/index.html" data-entry="window-functions">Window Functions</a> for the full <code>PARTITION BY</code> and frame mechanics.</p>
+      </details>
+    </section>
+
+    <!-- Section 5: Deeper -->
+    <details id="deeper" class="deeper">
+      <summary><h2>Deeper — Edge Cases &amp; Gotchas</h2></summary>
+      <div class="deeper-content">
+
+        <h3>Anti-pattern: join fan-out inflates every SUM</h3>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> joining two independent one-to-many branches off the same parent, then aggregating, without noticing the row count exploded first.
+          <pre><code class="lang-sql">-- WRONG: txn_total is inflated by the number of settlement rows
+SELECT m.name, SUM(t.amount) AS txn_total, SUM(s.amount) AS settled_total
+FROM merchants m
+JOIN transactions t ON t.merchant_id = m.merchant_id
+JOIN settlements  s ON s.merchant_id = m.merchant_id
+GROUP BY m.name;</code></pre>
+          <p>If a merchant has 80 transactions and 12 settlements, the join produces 80 × 12 = 960 rows for that merchant, and every transaction amount is now repeated 12 times. Nothing errors — the report is simply false, and it looks plausible. The fix is to aggregate each branch to one row per key <em>before</em> joining: <code>LEFT JOIN (SELECT merchant_id, SUM(amount) AS txn_total FROM transactions GROUP BY merchant_id) t USING (merchant_id)</code>, and the same for settlements. Neither branch can fan out the other once each is already one row per <code>merchant_id</code>. Diagnostic: run <code>COUNT(*)</code> before and after adding a join — if it grows, every pre-existing <code>SUM</code> in the query is now wrong.</p>
+        </div>
+
+        <h3>Anti-pattern: <code>NOT IN</code> with a nullable column</h3>
+        <div class="antipattern">
+          <strong>Anti-pattern:</strong> <code>WHERE customer_id NOT IN (SELECT customer_id FROM transactions)</code> when <code>transactions.customer_id</code> can be <code>NULL</code>.
+          <pre><code class="lang-text">-- subquery returns {7, 12, NULL}; NOT IN means customer_id &lt;&gt; 7 AND &lt;&gt; 12 AND &lt;&gt; NULL
+-- customer 99 (never transacted): TRUE AND TRUE AND UNKNOWN = UNKNOWN -> dropped
+-- customer 7  (did transact):     FALSE AND ...               = FALSE   -> dropped
+-- every row is FALSE or UNKNOWN, so the result set is empty -- and looks like a legitimate finding</code></pre>
+          <p>One <code>NULL</code> anywhere in the subquery's result poisons the whole comparison, because <code>NOT IN</code> is <code>&lt;&gt; ALL</code> and any comparison against <code>NULL</code> is <code>UNKNOWN</code>, never <code>TRUE</code>. Three fixes: rewrite as <code>NOT EXISTS</code> (safe by construction — a cardinality test, not a value comparison); rewrite as <code>LEFT JOIN ... WHERE t.customer_id IS NULL</code> (the same anti-join spelled as a join); or filter the <code>NULL</code>s out of the subquery explicitly with <code>WHERE customer_id IS NOT NULL</code>. Related trap: on the nullable side of a <code>LEFT JOIN</code>, <code>WHERE s.merchant_id IS NOT NULL</code> degrades the join back to an <code>INNER JOIN</code> — it discards exactly the padded rows the <code>LEFT</code> was there to preserve. Only <code>IS NULL</code> does useful work there.</p>
+        </div>
+
+        <h3>CTEs are not always an optimization fence</h3>
+        <p>Before Postgres 12, a CTE always materialized into a temporary result first — predicates could never be pushed down into it. Postgres 12 changed the default: a CTE referenced exactly once, that is non-recursive and side-effect-free, is now inlined automatically, as if it were never a separate CTE at all. Referenced more than once, it is still materialized by default. Both directions are overridable:</p>
+        <pre><code class="lang-sql">-- Referenced once -> inlined by default. Index on key IS used.
+WITH w AS (SELECT * FROM big_table)
+SELECT * FROM w WHERE key = 123;
+
+-- Force pushdown even when referenced twice:
+WITH w AS NOT MATERIALIZED (SELECT * FROM big_table)
+SELECT * FROM w AS w1 JOIN w AS w2 ON w1.key = w2.ref WHERE w2.key = 123;
+
+-- Force a one-time computation, to avoid re-running an expensive expression per reference:
+WITH w AS MATERIALIZED (
+    SELECT key, very_expensive_function(val) AS f FROM some_table
+)
+SELECT * FROM w AS w1 JOIN w AS w2 ON w1.f = w2.f;</code></pre>
+        <p>"CTEs are an optimization fence" was true before Postgres 12 and is false as a blanket claim today — the precise statement is: inlined when non-recursive, side-effect-free, and referenced exactly once; materialized otherwise; and both are overridable with <code>MATERIALIZED</code> / <code>NOT MATERIALIZED</code>.</p>
+
+        <h3>Recursive CTEs terminate only if you make them</h3>
+        <p>The evaluation is iterative, not truly recursive: evaluate the anchor term once into a working table, then repeatedly evaluate the recursive term against only the <em>previous</em> iteration's working table, until an iteration adds no new rows. <code>UNION</code> deduplicates and so terminates on a cyclic graph; <code>UNION ALL</code> does not, and will spin forever on one. For a graph with cycles, carry a path array and stop on revisit:</p>
+        <pre><code class="lang-sql">WITH RECURSIVE walk AS (
+    SELECT id, link, ARRAY[id] AS path, false AS is_cycle
+    FROM graph WHERE id = 1
+  UNION ALL
+    SELECT g.id, g.link, w.path || g.id, g.id = ANY(w.path)
+    FROM graph g JOIN walk w ON g.id = w.link
+    WHERE NOT w.is_cycle
+)
+SELECT * FROM walk;</code></pre>
+        <p>A <code>LIMIT</code> on the outer query genuinely stops the recursion early — Postgres evaluates only as many rows of a <code>WITH</code> query as the parent actually fetches — which is a useful safety net while developing one of these.</p>
+
+        <h3>Data-modifying CTEs share one snapshot</h3>
+        <p><code>WITH</code> can contain <code>INSERT</code>, <code>UPDATE</code>, <code>DELETE</code>, or <code>MERGE</code>, each with <code>RETURNING</code> — the pattern behind an atomic archive-and-delete in one statement. Three rules are all counter-intuitive: <code>RETURNING</code>'s output, not the modified table, is what the rest of the query can see; a data-modifying CTE always runs to completion even if the outer query never references its output; and every sub-statement shares one snapshot, so none can see another's writes:</p>
+        <pre><code class="lang-sql">WITH t AS (UPDATE products SET price = price * 1.05 RETURNING *)
+SELECT * FROM products;   -- ORIGINAL prices: same snapshot, can't see the UPDATE
+
+WITH t AS (UPDATE products SET price = price * 1.05 RETURNING *)
+SELECT * FROM t;          -- UPDATED prices: reads the RETURNING output, not the table</code></pre>
+        <p>That one-snapshot rule is a direct consequence of Postgres's MVCC model — one statement, one snapshot.</p>
+
+        <h3>Why <code>AVG</code> hides its NULL bug better than <code>COUNT</code></h3>
+        <p>Aggregates skip <code>NULL</code>s. <code>COUNT(*)</code> counts rows; <code>COUNT(customer_id)</code> counts only its non-<code>NULL</code> values — the gap between the two numbers is visible side by side. <code>AVG</code> gives no such tell: <code>AVG(x)</code> over <code>10, 20, NULL, NULL</code> divides by 2, not 4, and returns one plausible-looking number either way. Deciding whether NULLs should count as zero (<code>AVG(COALESCE(x, 0))</code>) or be excluded (<code>AVG(x)</code>) is a real choice — making it without noticing is the bug.</p>
+
+      </div>
+    </details>
+
+    <!-- Section 6: Cross-links & Sources -->
+    <section id="cross-links" class="cross-links">
+      <h2>See Also</h2>
+      <a class="related-card" href="../relational-data-model/index.html" data-entry="relational-data-model">
+        <strong>Relational Data Model</strong>
+        <span>The tables, tuples, and keys that every join, projection, and filter in this entry operates on and reassembles.</span>
+      </a>
+      <a class="related-card" href="../schema-design-normalization/index.html" data-entry="schema-design-normalization">
+        <strong>Schema Design — ER Diagrams &amp; Normalization</strong>
+        <span>Normalization scatters one entity across tables so each fact is stored once; a join is the read-time cost of undoing that split.</span>
+      </a>
+      <a class="related-card" href="../btree-indexes/index.html" data-entry="btree-indexes">
+        <strong>B-tree Indexes</strong>
+        <span>Equality predicates in <code>ON</code> and <code>WHERE</code>, and the <code>LATERAL</code> top-N pattern, both lean on the B-tree lookups covered here.</span>
+      </a>
+      <a class="related-card" href="../composite-indexes/index.html" data-entry="composite-indexes">
+        <strong>Composite Indexes</strong>
+        <span>A <code>LATERAL</code> join keyed on <code>(merchant_id, created_at DESC)</code> only becomes an index scan per merchant with a matching composite index.</span>
+      </a>
+      <a class="related-card" href="../mvcc/index.html" data-entry="mvcc">
+        <strong>MVCC</strong>
+        <span>Data-modifying CTEs execute under one MVCC snapshot, which is why a <code>WITH</code> <code>UPDATE</code> and a plain <code>SELECT</code> in the same statement can see different values.</span>
+      </a>
+      <a class="related-card" href="../select-for-update-skip-locked/index.html" data-entry="select-for-update-skip-locked">
+        <strong>SELECT FOR UPDATE &amp; SKIP LOCKED</strong>
+        <span>The archive-and-delete data-modifying CTE pattern here is the same one-statement idiom behind the SKIP LOCKED job-queue claim.</span>
+      </a>
+      <a class="related-card" href="../isolation-levels/index.html" data-entry="isolation-levels">
+        <strong>Isolation Levels &amp; Read Anomalies</strong>
+        <span>How long a data-modifying CTE's shared snapshot stays valid, and whether concurrent writers can affect it, depends on the isolation level in force.</span>
+      </a>
+      <a class="related-card" href="../denormalization/index.html" data-entry="denormalization">
+        <strong>Denormalization</strong>
+        <span>The deliberate choice to stop paying the join cost that every join in this entry imposes at read time.</span>
+      </a>
+      <a class="related-card" href="../window-functions/index.html" data-entry="window-functions">
+        <strong>Window Functions</strong>
+        <span><code>RANK()</code> and other window functions are computed inside the <code>SELECT</code> step traced in the Visual Model above — after <code>WHERE</code>, <code>GROUP BY</code>, and <code>HAVING</code>.</span>
+      </a>
+      <a class="related-card" href="../join-algorithms/index.html" data-entry="join-algorithms">
+        <strong>Join Algorithms</strong>
+        <span>The logical join types taught here (inner, outer, cross) say nothing about execution — nested loop, hash, and merge join are how the planner actually runs them.</span>
+      </a>
+      <a class="related-card" href="../query-planning/index.html" data-entry="query-planning">
+        <strong>Query Planning &amp; Optimization</strong>
+        <span>SQL only describes the result set; the planner reads that description and chooses the join order and access paths for it.</span>
+      </a>
+      <a class="related-card" href="../explain-analyze/index.html" data-entry="explain-analyze">
+        <strong>EXPLAIN &amp; EXPLAIN ANALYZE</strong>
+        <span>EXPLAIN is how you confirm whether <code>IN</code> and <code>EXISTS</code> really compiled to the same semi-join, or whether a fan-out is silently inflating a plan's row counts.</span>
+      </a>
+
+      <div class="sources">
+        <h3>Sources consulted</h3>
+        <ul>
+          <li><a href="https://www.postgresql.org/docs/current/queries-table-expressions.html" target="_blank" rel="noopener">PostgreSQL Documentation — 7.2. Table Expressions (FROM, joins, GROUP BY, HAVING, GROUPING SETS)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/queries-with.html" target="_blank" rel="noopener">PostgreSQL Documentation — 7.8. WITH Queries (Common Table Expressions)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/functions-subquery.html" target="_blank" rel="noopener">PostgreSQL Documentation — 9.23. Subquery Expressions</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/current/sql-select.html" target="_blank" rel="noopener">PostgreSQL Documentation — SELECT (logical processing order)</a> — cited in source research</li>
+          <li><a href="https://www.postgresql.org/docs/release/12.0/" target="_blank" rel="noopener">PostgreSQL 12 Release Notes — CTE inlining, MATERIALIZED / NOT MATERIALIZED</a> — cited in source research</li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- Section 7: Adaptive Recall -->
+    <section id="recall" class="recall">
+      <h2>Test Yourself</h2>
+      <div class="quiz">
+        <div class="quiz-question">
+          <p class="question-text">A report joins merchants to transactions and to settlements, then sums both. The totals come back far too high, but the query runs without any error. What's the most likely cause?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">A missing <code>WHERE</code> clause</button>
+            <button class="option" data-correct="true">Join fan-out — two one-to-many branches multiplying each other's row counts</button>
+            <button class="option" data-correct="false">Using <code>LEFT JOIN</code> instead of <code>INNER JOIN</code></button>
+            <button class="option" data-correct="false">NULLs being silently treated as zero inside <code>SUM</code></button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">Joining two independent one-to-many branches off the same parent multiplies their row counts against each other (80 × 12, not 80 + 12), inflating every pre-existing <code>SUM</code> — with no error, because the query is syntactically valid.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text"><code>WHERE customer_id NOT IN (SELECT customer_id FROM transactions)</code> returns zero rows, even though several customers plainly never transacted. What's the most direct fix?</p>
+          <div class="options" role="radiogroup">
+            <button class="option" data-correct="false">Add <code>DISTINCT</code> inside the subquery</button>
+            <button class="option" data-correct="false">Change <code>NOT IN</code> to plain <code>IN</code></button>
+            <button class="option" data-correct="true">Replace <code>NOT IN</code> with <code>NOT EXISTS</code></button>
+            <button class="option" data-correct="false">Wrap the outer <code>customer_id</code> in <code>COALESCE</code></button>
+          </div>
+          <div class="feedback hidden">
+            <span class="feedback-icon"></span>
+            <p class="feedback-text">If the subquery's column contains even one <code>NULL</code>, every <code>NOT IN</code> comparison degrades to <code>UNKNOWN</code> and the whole result is empty. <code>NOT EXISTS</code> asks a two-valued cardinality question instead, so it has no comparison for a <code>NULL</code> to poison.</p>
+          </div>
+        </div>
+
+        <div class="quiz-question">
+          <p class="question-text">What would happen if the settlement report's date-range predicate were moved from <code>ON</code> into <code>WHERE</code>?</p>
+          <button class="reveal-btn">Show answer</button>
+          <div class="answer hidden">
+            <p>The <code>LEFT JOIN</code> would silently become an <code>INNER JOIN</code>. The join itself still pads unmatched merchants with NULL settlement columns — but <code>WHERE</code> runs after that padding, and <code>NULL &gt;= DATE '2025-06-01'</code> evaluates to <code>UNKNOWN</code>, so every padded row gets discarded. Merchants with zero June settlements would vanish from the report instead of showing a total of <code>0</code>.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+  </article>
+
+  <!-- Hover preview popover for cross-links -->
+  <div class="link-popover" id="link-popover" hidden>
+    <strong class="popover-title"></strong>
+    <p class="popover-summary"></p>
+  </div>
+
+  <script>
+    // ── Dark mode toggle ──────────────────────────────────────────
+    const root = document.documentElement;
+    const themeBtn = document.getElementById('theme-toggle');
+    const updateIcon = () => themeBtn.textContent = root.dataset.theme === 'dark' ? '☀' : '◐';
+    updateIcon();
+    themeBtn.addEventListener('click', () => {
+      const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+      root.dataset.theme = next;
+      localStorage.setItem('teach-theme', next);
+      updateIcon();
+    });
+
+    // ── Copy buttons for <pre> blocks ─────────────────────────────
+    document.querySelectorAll('pre').forEach(pre => {
+      const btn = document.createElement('button');
+      btn.className = 'copy-btn';
+      btn.textContent = 'copy';
+      btn.addEventListener('click', () => {
+        navigator.clipboard.writeText(pre.innerText.replace('copy', '').trim());
+        btn.textContent = 'copied ✓';
+        setTimeout(() => btn.textContent = 'copy', 1500);
+      });
+      pre.style.position = 'relative';
+      pre.appendChild(btn);
+    });
+
+    // ── Interactive quiz ──────────────────────────────────────────
+    document.querySelectorAll('.quiz-question').forEach(q => {
+      const options = q.querySelectorAll('.option');
+      const feedback = q.querySelector('.feedback');
+      const feedbackIcon = q.querySelector('.feedback-icon');
+      const feedbackText = q.querySelector('.feedback-text');
+
+      options.forEach(opt => {
+        opt.addEventListener('click', () => {
+          if (q.dataset.answered) return;
+          q.dataset.answered = 'true';
+          const correct = opt.dataset.correct === 'true';
+          options.forEach(o => {
+            o.disabled = true;
+            if (o.dataset.correct === 'true') o.classList.add('correct');
+            else o.classList.add('wrong');
+          });
+          if (feedback) {
+            feedback.classList.remove('hidden');
+            feedbackIcon.textContent = correct ? '✓' : '✗';
+            feedback.classList.add(correct ? 'feedback-correct' : 'feedback-wrong');
+          }
+        });
+      });
+
+      const revealBtn = q.querySelector('.reveal-btn');
+      if (revealBtn) {
+        revealBtn.addEventListener('click', () => {
+          q.querySelector('.answer').classList.remove('hidden');
+          revealBtn.hidden = true;
+        });
+      }
+    });
+
+    // ── Logical evaluation order trace (bespoke algorithm-trace diagram) ──
+    const evalSteps = [
+      {
+        clause: 'clause-from', mode: 'rows', excludeRows: [], excludeGroups: [],
+        note: 'FROM assembles the source rows. All 7 transactions exist right now — nothing has been filtered, grouped, or projected yet.'
+      },
+      {
+        clause: 'clause-where', mode: 'rows', excludeRows: ['row-3', 'row-7'], excludeGroups: [],
+        note: "WHERE discards individual rows. status = 'SUCCESS' fails for rows 3 and 7 (FAILED), so they're dropped before grouping ever happens. 5 rows survive."
+      },
+      {
+        clause: 'clause-groupby', mode: 'groups', excludeRows: [], excludeGroups: [],
+        note: "GROUP BY collapses the surviving rows into one group per merchant_id and computes the aggregates. M1 has 2 rows (avg 230), M2 has 2 rows (avg 52.5), M3 has 1 row (avg 500). The grain just changed from 'one row per transaction' to 'one row per merchant.'"
+      },
+      {
+        clause: 'clause-having', mode: 'groups', excludeRows: [], excludeGroups: ['grp-M3'],
+        note: 'HAVING discards whole groups. COUNT(*) > 1 fails for M3 (only 1 surviving row), so the entire M3 group is dropped — even though its average (500) is the highest of the three.'
+      },
+      {
+        clause: 'clause-select', mode: 'groups', excludeRows: [], excludeGroups: ['grp-M3'],
+        note: 'SELECT computes the output expressions. This is the moment the alias avg_amt is born — which is exactly why WHERE and HAVING, both of which already ran, could never reference it by name.'
+      },
+      {
+        clause: 'clause-orderby', mode: 'groups', excludeRows: [], excludeGroups: ['grp-M3'], order: true,
+        note: "ORDER BY sorts the final rows and runs last — so unlike WHERE and HAVING, it's allowed to sort by the output alias avg_amt directly."
+      },
+    ];
+
+    let evalStep = 0;
+    const rowsTable = document.getElementById('rows-table');
+    const groupsTable = document.getElementById('groups-table');
+    const groupsBody = groupsTable ? groupsTable.querySelector('tbody') : null;
+    const evalStepNum = document.getElementById('step-num');
+    const evalStepTotal = document.getElementById('step-total');
+    const evalStepExp = document.getElementById('step-explanation');
+    const evalPrev = document.getElementById('prev-btn');
+    const evalNext = document.getElementById('next-btn');
+    const evalReset = document.getElementById('reset-btn');
+    const orderNote = document.getElementById('eval-order-note');
+
+    function applyEvalStep(i) {
+      const step = evalSteps[i];
+
+      document.querySelectorAll('.clause').forEach(c => c.classList.remove('active'));
+      const activeClause = document.getElementById(step.clause);
+      if (activeClause) activeClause.classList.add('active');
+
+      const showGroups = step.mode === 'groups';
+      rowsTable.hidden = showGroups;
+      groupsTable.hidden = !showGroups;
+
+      document.querySelectorAll('#rows-table .eval-row').forEach(tr => {
+        tr.classList.toggle('excluded', step.excludeRows.includes(tr.id));
+      });
+      document.querySelectorAll('#groups-table .eval-row').forEach(tr => {
+        tr.classList.toggle('excluded', step.excludeGroups.includes(tr.id));
+      });
+
+      if (showGroups && groupsBody) {
+        if (step.order) {
+          Array.from(groupsBody.children)
+            .sort((a, b) => parseFloat(b.dataset.avg) - parseFloat(a.dataset.avg))
+            .forEach(tr => groupsBody.appendChild(tr));
+          orderNote.textContent = 'Rows reordered by avg_amt DESC.';
+        } else {
+          orderNote.textContent = '';
+        }
+      } else {
+        orderNote.textContent = '';
+      }
+
+      if (evalStepExp) evalStepExp.textContent = step.note;
+      if (evalStepNum) evalStepNum.textContent = i + 1;
+      evalPrev.disabled = i === 0;
+      evalNext.disabled = i === evalSteps.length - 1;
+    }
+
+    if (evalStepTotal) evalStepTotal.textContent = evalSteps.length;
+    applyEvalStep(0);
+    evalPrev.addEventListener('click', () => { if (evalStep > 0) applyEvalStep(--evalStep); });
+    evalNext.addEventListener('click', () => { if (evalStep < evalSteps.length - 1) applyEvalStep(++evalStep); });
+    evalReset.addEventListener('click', () => { evalStep = 0; applyEvalStep(0); });
+
+    // ── Cross-link hover preview ──────────────────────────────────
+    const popover = document.getElementById('link-popover');
+    const entryData = {
+      'relational-data-model': {
+        title: 'Relational Data Model',
+        summary: 'Tables as sets of tuples; keys, constraints, and 1:N/M:N/1:1 relationships — the foundation SQL queries operate on.'
+      },
+      'schema-design-normalization': {
+        title: 'Schema Design — ER Diagrams & Normalization (1NF → BCNF)',
+        summary: "ER modeling and normalization 1NF→BCNF: functional dependencies, the three anomalies, and BCNF's edge case."
+      },
+      'btree-indexes': {
+        title: 'B-tree Indexes',
+        summary: 'How a B-tree turns O(n) scans into O(log n) lookups — equality vs range traversal and why f(column) defeats the index.'
+      },
+      'composite-indexes': {
+        title: 'Composite Indexes',
+        summary: 'The leftmost-prefix rule and equality-before-range column ordering for multi-column indexes.'
+      },
+      'mvcc': {
+        title: 'MVCC — How Postgres Implements Multi-Version Concurrency Control',
+        summary: 'Version-stamped tuples, snapshots, and visibility rules — how Postgres implements multi-version concurrency control.'
+      },
+      'select-for-update-skip-locked': {
+        title: 'SELECT FOR UPDATE & SKIP LOCKED',
+        summary: 'Row-level locking, SKIP LOCKED, and the Postgres job-queue claim pattern.'
+      },
+      'isolation-levels': {
+        title: 'Isolation Levels & Read Anomalies',
+        summary: 'The anomaly×level table, MVCC snapshot timing, write skew, and the 40001 retry contract.'
+      },
+      'denormalization': {
+        title: 'Denormalization — When and Why to Break Normalization Rules',
+        summary: 'Trading write complexity for read speed: counter columns, redundant copies, and materialized views.'
+      },
+      'window-functions': {
+        title: 'Window Functions',
+        summary: 'Aggregating without collapsing rows: RANK/ROW_NUMBER, LAG/LEAD, partitions, and frames.'
+      },
+      'join-algorithms': {
+        title: 'Join Algorithms — Nested Loop, Hash Join & Merge Join',
+        summary: 'Nested loop, hash join, and merge join — the physical strategies behind a logical join.'
+      },
+      'query-planning': {
+        title: 'Query Planning & Optimization',
+        summary: 'How the planner turns a declarative query into a cost-estimated execution plan.'
+      },
+      'explain-analyze': {
+        title: 'EXPLAIN & EXPLAIN ANALYZE',
+        summary: 'Reading EXPLAIN ANALYZE output: node anatomy, cumulative cost, and the diagnostic order for plan regressions.'
+      },
+    };
+
+    document.querySelectorAll('[data-entry]').forEach(link => {
+      link.addEventListener('mouseenter', e => {
+        const d = entryData[link.dataset.entry];
+        if (!d) return;
+        popover.querySelector('.popover-title').textContent = d.title;
+        popover.querySelector('.popover-summary').textContent = d.summary;
+        const rect = link.getBoundingClientRect();
+        popover.style.top = (rect.bottom + window.scrollY + 8) + 'px';
+        popover.style.left = Math.min(rect.left, window.innerWidth - 260) + 'px';
+        popover.hidden = false;
+      });
+      link.addEventListener('mouseleave', () => { popover.hidden = true; });
+    });
+  </script>
+</body>
+</html>
